@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="manifest" href="/manifest.webmanifest">
+  <title>Netlify + Redis Push Starter</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 2rem; line-height: 1.5; }
+    code { background: #f4f4f4; padding: 0 4px; border-radius: 4px; }
+    .log { background: #111; color: #e6e6e6; padding: 1rem; border-radius: 8px; height: 220px; overflow: auto; }
+    button { padding: 0.6rem 1rem; border-radius: 8px; border: 1px solid #ccc; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <h1>Netlify + Redis Cloud + Web Push</h1>
+  <p>This is a minimal starter that registers a Service Worker, subscribes to Web Push, and stores the subscription in Redis Cloud via Netlify Functions.</p>
+
+  <button id="subscribeBtn">Subscribe to Push</button>
+  <p>Status: <span id="status">idle</span></p>
+
+  <h3>Log</h3>
+  <pre class="log" id="log"></pre>
+
+  <script src="/app.js" type="module"></script>
+</body>
+</html>

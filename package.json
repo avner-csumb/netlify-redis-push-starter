@@ -1,0 +1,19 @@
+{
+  "name": "netlify-redis-push-starter",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "netlify dev",
+    "build": "echo 'Static site - nothing to build'",
+    "start": "netlify dev"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@netlify/functions": "^2.6.0",
+    "redis": "^4.6.14",
+    "web-push": "^3.6.7"
+  }
+}
