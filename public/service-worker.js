@@ -7,26 +7,25 @@ self.addEventListener('activate', (event) => {
 });
 
 
-self.addEventListener('fetch', (event) => {
-  // Minimal fetch handler keeps SW active; network-first
-});
-
-
 self.addEventListener('push', (event) => {
-  let data = {};
-  try { data = event.data ? event.data.json() : {}; } catch {}
-  const ts = data.ts || Date.now();
-  const title = 'Background tick';
-  const body = `Received at ${new Date(ts).toLocaleString()}`;
-
-  const show = self.registration.showNotification(title, { body });
-  event.waitUntil(show);
-
-  // Also notify any open clients
   event.waitUntil((async () => {
-    const all = await self.clients.matchAll({ includeUncontrolled: true, type: 'window' });
-    for (const client of all) {
-      client.postMessage({ type: 'tick', ts });
+    let data = {};
+    try { data = event.data ? event.data.json() : {}; } catch {}
+    const ts = data.ts || Date.now();
+
+    const clientsList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const hasVisibleClient = clientsList.some(c => c.visibilityState === 'visible');
+
+    if (hasVisibleClient) {
+      // App is open somewhere: update UI without a system notification
+      clientsList.forEach(c => c.postMessage({ type: 'tick', ts }));
+    } else {
+      // No visible client: show a notification to satisfy user-visible requirement
+      await self.registration.showNotification('Background tick', {
+        body: `Received at ${new Date(ts).toLocaleString()}`,
+        tag: 'tick',          // coalesce repeated ticks
+        renotify: false
+      });
     }
   })());
 });
