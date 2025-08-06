@@ -9,6 +9,16 @@ const username = process.env.REDIS_USER || "default";
 const password = process.env.REDIS_PASSWORD;
 const preferTLS = String(process.env.REDIS_TLS || "true").toLowerCase() === "true";
 
+
+exports.handler = async (event) => {
+  return {
+    statusCode: 200,
+    headers: { "Access-Control-Allow-Origin": "*" },
+    body: JSON.stringify({ ok: true, note: "short-circuit" })
+  };
+};
+
+
 async function connectRedis() {
   const tryConnect = async (tls) => {
     const client = createClient({
