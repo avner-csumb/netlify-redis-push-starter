@@ -16,6 +16,9 @@
   <h1>Netlify + Redis Cloud + Web Push</h1>
   <p>This is a minimal starter that registers a Service Worker, subscribes to Web Push, and stores the subscription in Redis Cloud via Netlify Functions.</p>
 
+  <button id="installBtn" hidden>Install app</button>
+  <script type="module" src="/install.js"></script>
+
   <button id="subscribeBtn">Subscribe to Push</button>
   <p>Status: <span id="status">idle</span></p>
 
