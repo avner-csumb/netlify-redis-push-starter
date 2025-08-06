@@ -6,6 +6,12 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(self.clients.claim());
 });
 
+
+self.addEventListener('fetch', (event) => {
+  // Minimal fetch handler keeps SW active; network-first
+});
+
+
 self.addEventListener('push', (event) => {
   let data = {};
   try { data = event.data ? event.data.json() : {}; } catch {}
