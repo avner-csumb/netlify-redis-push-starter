@@ -1,11 +1,17 @@
-// netlify/functions/send-push.js
-import { schedule } from "@netlify/functions";
-import webpush from "web-push";
-import { createClient } from "redis";
-import dns from "node:dns";
-
-// Prefer IPv4 first to avoid rare IPv6 stalls in serverless envs
+const { schedule } = require("@netlify/functions");
+const webpush = require("web-push");
+const { createClient } = require("redis");
+const dns = require("node:dns");
 dns.setDefaultResultOrder?.("ipv4first");
+
+// // netlify/functions/send-push.js
+// import { schedule } from "@netlify/functions";
+// import webpush from "web-push";
+// import { createClient } from "redis";
+// import dns from "node:dns";
+
+// // Prefer IPv4 first to avoid rare IPv6 stalls in serverless envs
+// dns.setDefaultResultOrder?.("ipv4first");
 
 // --- VAPID setup ---
 const VAPID_PUBLIC_KEY  = process.env.VAPID_PUBLIC_KEY  || "";
