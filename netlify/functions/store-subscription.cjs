@@ -66,8 +66,16 @@ exports.handler = async (event) => {
     if (!sub?.endpoint) return resp(400, "Missing subscription");
 
     const db = await getClient();
+
     const id = crypto.createHash("sha1").update(sub.endpoint).digest("hex");
-    await db.set(`sub:${id}`, JSON.stringify(sub), { EX: 60 * 60 * 24 * 30 });
+    const key = `sub:${id}`;
+    const setPromise = db.set(key, JSON.stringify(sub), { EX: 60 * 60 * 24 * 30 });
+
+    // 👇 Guard so we return 500 with a clear message instead of 504
+    await Promise.race([
+      setPromise,
+      new Promise((_, rej) => setTimeout(() => rej(new Error("db.set timeout")), 4000))
+    ]);
 
     return resp(200, { stored:true, id }, true);
   } catch (e) {
