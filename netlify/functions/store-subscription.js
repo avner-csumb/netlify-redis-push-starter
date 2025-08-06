@@ -13,6 +13,21 @@ const username = process.env.REDIS_USER || "default";
 const password = process.env.REDIS_PASSWORD;
 const preferTLS = String(process.env.REDIS_TLS || "true").toLowerCase() === "true";
 
+
+console.log("store-sub BOOT");   // module loaded
+
+export async function handler(event) {
+  console.log("store-sub START", { method: event.httpMethod, t: Date.now() }); // handler entered
+  // TEMP: short-circuit to prove the function runs and responds quickly
+  return {
+    statusCode: 200,
+    headers: { "Access-Control-Allow-Origin": "*", "Content-Type": "application/json" },
+    body: JSON.stringify({ ok: true, note: "short-circuit" })
+  };
+}
+
+
+
 async function connectRedis() {
   const tryConnect = async (tls) => {
     const client = createClient({
