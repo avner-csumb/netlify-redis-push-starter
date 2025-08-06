@@ -63,55 +63,75 @@ function resp(status, body, json = false) {
   };
 }
 
+// exports.handler = async (event) => {
+//   console.log("[Handler] store-subscription START");
+//   try {
+//     if (event.httpMethod === "OPTIONS") {
+//       console.log("[Handler] OPTIONS preflight");
+//       return {
+//         statusCode: 204,
+//         headers: {
+//           "Access-Control-Allow-Origin": "*",
+//           "Access-Control-Allow-Methods": "POST, OPTIONS",
+//           "Access-Control-Allow-Headers": "content-type"
+//         }
+//       };
+//     }
+//     if (event.httpMethod !== "POST") {
+//       console.warn("[Handler] Wrong method:", event.httpMethod);
+//       return resp(405, "Method Not Allowed");
+//     }
+//     if (!host || !port) return resp(500, "REDIS_HOST/REDIS_PORT not configured");
+//     if (!username || !password) return resp(500, "REDIS_USER/REDIS_PASSWORD not configured");
+
+//     console.log("[Handler] Parsing body…");
+//     let payload;
+//     try {
+//       payload = JSON.parse(event.body || "{}");
+//     } catch {
+//       return resp(400, "Invalid JSON");
+//     }
+//     const sub = payload?.subscription;
+//     if (!sub?.endpoint) return resp(400, "Missing subscription");
+
+//     console.log("[Handler] Connecting to Redis…");
+//     const db = await getClient();
+
+//     const id = crypto.createHash("sha1").update(sub.endpoint).digest("hex");
+//     const key = `sub:${id}`;
+//     console.log(`[Handler] Writing key ${key}…`);
+
+//     const setPromise = db.set(key, JSON.stringify(sub), { EX: 60 * 60 * 24 * 30 });
+
+//     await Promise.race([
+//       setPromise,
+//       new Promise((_, rej) => setTimeout(() => rej(new Error("db.set timeout")), 4000))
+//     ]);
+
+//     console.log("[Handler] Stored subscription successfully");
+//     return resp(200, { stored: true, id }, true);
+//   } catch (e) {
+//     console.error("[Handler] Error:", e?.message || e);
+//     return resp(500, e?.message || String(e));
+//   }
+// };
+
+
 exports.handler = async (event) => {
-  console.log("[Handler] store-subscription START");
-  try {
-    if (event.httpMethod === "OPTIONS") {
-      console.log("[Handler] OPTIONS preflight");
-      return {
-        statusCode: 204,
-        headers: {
-          "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods": "POST, OPTIONS",
-          "Access-Control-Allow-Headers": "content-type"
-        }
-      };
-    }
-    if (event.httpMethod !== "POST") {
-      console.warn("[Handler] Wrong method:", event.httpMethod);
-      return resp(405, "Method Not Allowed");
-    }
-    if (!host || !port) return resp(500, "REDIS_HOST/REDIS_PORT not configured");
-    if (!username || !password) return resp(500, "REDIS_USER/REDIS_PASSWORD not configured");
-
-    console.log("[Handler] Parsing body…");
-    let payload;
-    try {
-      payload = JSON.parse(event.body || "{}");
-    } catch {
-      return resp(400, "Invalid JSON");
-    }
-    const sub = payload?.subscription;
-    if (!sub?.endpoint) return resp(400, "Missing subscription");
-
-    console.log("[Handler] Connecting to Redis…");
-    const db = await getClient();
-
-    const id = crypto.createHash("sha1").update(sub.endpoint).digest("hex");
-    const key = `sub:${id}`;
-    console.log(`[Handler] Writing key ${key}…`);
-
-    const setPromise = db.set(key, JSON.stringify(sub), { EX: 60 * 60 * 24 * 30 });
-
-    await Promise.race([
-      setPromise,
-      new Promise((_, rej) => setTimeout(() => rej(new Error("db.set timeout")), 4000))
-    ]);
-
-    console.log("[Handler] Stored subscription successfully");
-    return resp(200, { stored: true, id }, true);
-  } catch (e) {
-    console.error("[Handler] Error:", e?.message || e);
-    return resp(500, e?.message || String(e));
+  if (event.httpMethod === "OPTIONS") {
+    return { statusCode: 204, headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods":"POST,OPTIONS", "Access-Control-Allow-Headers":"content-type" } };
   }
+  if (event.httpMethod !== "POST") return { statusCode: 405, body: "Method Not Allowed" };
+
+  const { getStore } = await import("@netlify/blobs");
+  const store = getStore("subs"); // global, site-wide store
+
+  let payload; try { payload = JSON.parse(event.body || "{}"); } catch { return { statusCode: 400, body: "Invalid JSON" }; }
+  const sub = payload?.subscription;
+  if (!sub?.endpoint) return { statusCode: 400, body: "Missing subscription" };
+
+  const id = crypto.createHash("sha1").update(sub.endpoint).digest("hex");
+  await store.setJSON(`sub:${id}`, sub); // quick and dirty
+
+  return { statusCode: 200, headers: { "Access-Control-Allow-Origin": "*", "Content-Type": "application/json" }, body: JSON.stringify({ stored: true, id }) };
 };

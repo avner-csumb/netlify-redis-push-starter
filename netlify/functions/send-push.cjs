@@ -118,18 +118,43 @@ async function doSend() {
 }
 
 // Runs every 15 minutes
-export const handler = schedule("*/15 * * * *", async () => {
-  try {
-    const result = await doSend();
-    return {
-      statusCode: 200,
-      body: JSON.stringify({ when: new Date().toISOString(), result })
-    };
-  } catch (e) {
-    console.error(e);
-    return { statusCode: 500, body: String(e?.message || e) };
+// export const handler = schedule("*/15 * * * *", async () => {
+//   try {
+//     const result = await doSend();
+//     return {
+//       statusCode: 200,
+//       body: JSON.stringify({ when: new Date().toISOString(), result })
+//     };
+//   } catch (e) {
+//     console.error(e);
+//     return { statusCode: 500, body: String(e?.message || e) };
+//   }
+// });
+
+exports.handler = schedule("*/15 * * * *", async () => {
+  const { getStore } = await import("@netlify/blobs");
+  const store = getStore("subs");
+
+  let token;
+  let sent=0, failed=0, removed=0;
+
+  for await (const entry of store.list({ prefix: "sub:" })) {
+    const sub = await store.getJSON(entry.key);
+    if (!sub) continue;
+    try {
+      await webpush.sendNotification(sub, JSON.stringify({ type: "tick", ts: Date.now() }), { TTL: 3600 });
+      sent++;
+    } catch (err) {
+      failed++;
+      if (err?.statusCode === 404 || err?.statusCode === 410) {
+        await store.delete(entry.key); removed++;
+      }
+    }
   }
+
+  return { statusCode: 200, body: JSON.stringify({ sent, failed, removed }) };
 });
+
 
 
 // import { schedule } from "@netlify/functions";
