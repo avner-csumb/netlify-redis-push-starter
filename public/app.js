@@ -4,8 +4,13 @@ function log(...args) { logEl.textContent += args.join(' ') + "\n"; }
 
 async function getVapidPublicKey() {
   const res = await fetch('/.netlify/functions/public-key');
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`public-key failed (${res.status}): ${text}`);
+  }
   const { publicKey } = await res.json();
   if (!publicKey) throw new Error('Missing VAPID_PUBLIC_KEY on server');
+  log('VAPID public key length:', publicKey.length);
   return publicKey;
 }
 
@@ -30,19 +35,31 @@ async function ensureServiceWorker() {
 async function subscribe() {
   statusEl.textContent = 'subscribing…';
   try {
+    // Optional: make the permission state explicit in logs
+    if ('Notification' in window) log('Notification.permission =', Notification.permission);
+
     const reg = await ensureServiceWorker();
     const pub = await getVapidPublicKey();
+
     const sub = await reg.pushManager.subscribe({
       userVisibleOnly: true,
       applicationServerKey: urlBase64ToUint8Array(pub)
     });
+
     log('Got subscription for endpoint:', sub.endpoint);
+
     const res = await fetch('/.netlify/functions/store-subscription', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ subscription: sub })
     });
-    if (!res.ok) throw new Error('Failed to store subscription');
+
+    // >>> Changed: show server error details
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Store failed (${res.status}): ${text}`);
+    }
+
     const data = await res.json();
     statusEl.textContent = 'subscribed';
     log('Stored in Redis:', JSON.stringify(data));
