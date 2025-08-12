@@ -51,7 +51,7 @@ async function subscribe() {
     const res = await fetch('/.netlify/functions/store-subscription', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ subscription: sub })
+      body: JSON.stringify(sub.toJSON())
     });
 
     // >>> Changed: show server error details

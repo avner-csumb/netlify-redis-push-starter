@@ -6,6 +6,8 @@ export async function handler(event) {
   }
 
   const sub = JSON.parse(event.body || '{}');
+  console.log("Received subscription:", JSON.stringify(sub, null, 2));
+
   const endpoint   = sub.endpoint;
   const p256dh     = sub.keys?.p256dh;
   const auth       = sub.keys?.auth;
