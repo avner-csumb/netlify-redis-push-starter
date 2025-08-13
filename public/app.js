@@ -276,63 +276,112 @@ async function sendResult(direction, r, { sid }) {
 
 async function runManualTest() {
   updateStatus('running...');
+  resultDisplay.textContent = '';
   log('Starting MSAK test');
 
   try {
     const sid = `manual-${Date.now()}`;
-    // const client = new msak.Client('wss://msakserver.calspeed.org');
-    const client = new msak.Client('web-client', '0.3.1');
 
-      client.metadata = {
-      ...(client.metadata || {}),
+    const client = new msak.Client('web-client', '0.3.1', {
+      onDownloadResult: async (r) => {
+        log('Download result:', JSON.stringify(r));
+        await sendResult('download', r, { sid });
+        updateStatus('download done');
+        resultDisplay.textContent += `Download:\n${JSON.stringify(r, null, 2)}\n\n`;
+      },
+      onUploadResult: async (r) => {
+        log('Upload result:', JSON.stringify(r));
+        await sendResult('upload', r, { sid });
+        updateStatus('upload done');
+        resultDisplay.textContent += `Upload:\n${JSON.stringify(r, null, 2)}\n\n`;
+      },
+      onError: (e) => {
+        log('MSAK error:', e.message || e);
+        updateStatus('error');
+      }
+    });
+
+    client.metadata = {
       sid,
       trigger: 'manual',
       ua: navigator.userAgent
     };
 
-
-    // Shim for older version
-    if (!client.runThroughputTest) {
-      client.runThroughputTest = function (a, b, c) {
-        let sid, streams, durationMs;
-        if (a && typeof a === 'object') ({ sid, streams, durationMs } = a);
-        else { sid = a; streams = b; durationMs = c; }
-
-        if (streams) this.streams = streams;
-        if (durationMs) this.duration = durationMs;
-        if (sid) this.metadata = { ...(this.metadata || {}), sid };
-
-        return this.start();
-      };
-    }
-
-    const result = await client.runThroughputTest({
+    await client.runThroughputTest({
       sid,
       streams: 4,
       durationMs: 3600
     });
 
-    log(`Test finished: ↓ ${result.downloadGoodputMbps} Mbps, ↑ ${result.uploadGoodputMbps} Mbps, RTT: ${result.minRttMs} ms`);
-
-    // Optional: send to Netlify
-    const saveRes = await fetch('/.netlify/functions/save-result', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        sid,
-        test_time: new Date().toISOString(),
-        result,
-        source: 'manual'
-      })
-    });
-
-    const saveJson = await saveRes.json();
-    log(`Saved to Neon: ${JSON.stringify(saveJson)}`);
-    updateStatus('done');
+    log('MSAK test complete.');
+    updateStatus('complete');
   } catch (err) {
     log(`Error: ${err.message}`);
     updateStatus('error');
   }
 }
+
+
+
+// async function runManualTest() {
+//   updateStatus('running...');
+//   log('Starting MSAK test');
+
+//   try {
+//     const sid = `manual-${Date.now()}`;
+//     // const client = new msak.Client('wss://msakserver.calspeed.org');
+//     const client = new msak.Client('web-client', '0.3.1');
+
+//       client.metadata = {
+//       ...(client.metadata || {}),
+//       sid,
+//       trigger: 'manual',
+//       ua: navigator.userAgent
+//     };
+
+
+//     // Shim for older version
+//     if (!client.runThroughputTest) {
+//       client.runThroughputTest = function (a, b, c) {
+//         let sid, streams, durationMs;
+//         if (a && typeof a === 'object') ({ sid, streams, durationMs } = a);
+//         else { sid = a; streams = b; durationMs = c; }
+
+//         if (streams) this.streams = streams;
+//         if (durationMs) this.duration = durationMs;
+//         if (sid) this.metadata = { ...(this.metadata || {}), sid };
+
+//         return this.start();
+//       };
+//     }
+
+//     const result = await client.runThroughputTest({
+//       sid,
+//       streams: 4,
+//       durationMs: 3600
+//     });
+
+//     log(`Test finished: ↓ ${result.downloadGoodputMbps} Mbps, ↑ ${result.uploadGoodputMbps} Mbps, RTT: ${result.minRttMs} ms`);
+
+//     // Optional: send to Netlify
+//     const saveRes = await fetch('/.netlify/functions/save-result', {
+//       method: 'POST',
+//       headers: { 'Content-Type': 'application/json' },
+//       body: JSON.stringify({
+//         sid,
+//         test_time: new Date().toISOString(),
+//         result,
+//         source: 'manual'
+//       })
+//     });
+
+//     const saveJson = await saveRes.json();
+//     log(`Saved to Neon: ${JSON.stringify(saveJson)}`);
+//     updateStatus('done');
+//   } catch (err) {
+//     log(`Error: ${err.message}`);
+//     updateStatus('error');
+//   }
+// }
 
 runBtn.addEventListener('click', runManualTest);
