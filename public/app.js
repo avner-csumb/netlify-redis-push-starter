@@ -274,6 +274,7 @@ async function sendResult(direction, r, { sid }) {
 //   statusEl.textContent = text;
 // }
 
+
 async function runManualTest() {
   updateStatus('running...');
   resultDisplay.textContent = '';
@@ -282,18 +283,15 @@ async function runManualTest() {
   try {
     const sid = `manual-${Date.now()}`;
 
+    let finalDownload = null;
+    let finalUpload = null;
+
     const client = new msak.Client('web-client', '0.3.1', {
-      onDownloadResult: async (r) => {
-        log('Download result:', JSON.stringify(r));
-        await sendResult('download', r, { sid });
-        updateStatus('download done');
-        resultDisplay.textContent += `Download:\n${JSON.stringify(r, null, 2)}\n\n`;
+      onDownloadResult: (r) => {
+        finalDownload = r;
       },
-      onUploadResult: async (r) => {
-        log('Upload result:', JSON.stringify(r));
-        await sendResult('upload', r, { sid });
-        updateStatus('upload done');
-        resultDisplay.textContent += `Upload:\n${JSON.stringify(r, null, 2)}\n\n`;
+      onUploadResult: (r) => {
+        finalUpload = r;
       },
       onError: (e) => {
         log('MSAK error:', e.message || e);
@@ -314,12 +312,74 @@ async function runManualTest() {
     });
 
     log('MSAK test complete.');
+
+    // ✅ Only log the final values
+    if (finalDownload) {
+      log(`↓ ${finalDownload.goodput.toFixed(2)} Mbps`);
+      resultDisplay.textContent += `Download:\n${JSON.stringify(finalDownload, null, 2)}\n\n`;
+      await sendResult('download', finalDownload, { sid });
+    }
+
+    if (finalUpload) {
+      log(`↑ ${finalUpload.goodput.toFixed(2)} Mbps`);
+      resultDisplay.textContent += `Upload:\n${JSON.stringify(finalUpload, null, 2)}\n\n`;
+      await sendResult('upload', finalUpload, { sid });
+    }
+
     updateStatus('complete');
   } catch (err) {
     log(`Error: ${err.message}`);
     updateStatus('error');
   }
 }
+
+
+// async function runManualTest() {
+//   updateStatus('running...');
+//   resultDisplay.textContent = '';
+//   log('Starting MSAK test');
+
+//   try {
+//     const sid = `manual-${Date.now()}`;
+
+//     const client = new msak.Client('web-client', '0.3.1', {
+//       onDownloadResult: async (r) => {
+//         log('Download result:', JSON.stringify(r));
+//         await sendResult('download', r, { sid });
+//         updateStatus('download done');
+//         resultDisplay.textContent += `Download:\n${JSON.stringify(r, null, 2)}\n\n`;
+//       },
+//       onUploadResult: async (r) => {
+//         log('Upload result:', JSON.stringify(r));
+//         await sendResult('upload', r, { sid });
+//         updateStatus('upload done');
+//         resultDisplay.textContent += `Upload:\n${JSON.stringify(r, null, 2)}\n\n`;
+//       },
+//       onError: (e) => {
+//         log('MSAK error:', e.message || e);
+//         updateStatus('error');
+//       }
+//     });
+
+//     client.metadata = {
+//       sid,
+//       trigger: 'manual',
+//       ua: navigator.userAgent
+//     };
+
+//     await client.runThroughputTest({
+//       sid,
+//       streams: 4,
+//       durationMs: 3600
+//     });
+
+//     log('MSAK test complete.');
+//     updateStatus('complete');
+//   } catch (err) {
+//     log(`Error: ${err.message}`);
+//     updateStatus('error');
+//   }
+// }
 
 
 
