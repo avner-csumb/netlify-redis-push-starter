@@ -15,6 +15,14 @@ export const handler = schedule('*/15 * * * *', async () => {
   for (const r of rows) {
     const sub = { endpoint: r.endpoint, keys: { p256dh: r.p256dh, auth: r.auth } };
 
+        // ✅ 2. Construct push payload with sid and test options
+    const payload = {
+      type: 'RUN_TEST',
+      sid: r.id,           // <— Subscription ID (foreign key to match in results)
+      streams: 2,
+      durationMs: 5000
+    };
+
     try {
       await webpush.sendNotification(sub, JSON.stringify({ type: 'RUN_TEST', ts: Date.now() }));
       await sql`UPDATE push_subscriptions SET last_push_at = now() WHERE id = ${r.id}`;

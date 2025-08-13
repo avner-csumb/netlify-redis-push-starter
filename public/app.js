@@ -62,7 +62,7 @@ async function subscribe() {
 
     const data = await res.json();
     statusEl.textContent = 'subscribed';
-    log('Stored in Redis:', JSON.stringify(data));
+    log('Stored in Neon:', JSON.stringify(data));
   } catch (e) {
     statusEl.textContent = 'error';
     log('Subscribe error:', e.message);
@@ -73,3 +73,109 @@ async function subscribe() {
 document.getElementById('subscribeBtn').addEventListener('click', subscribe);
 
 log('Ready. Click "Subscribe to Push".');
+
+navigator.serviceWorker?.addEventListener('message', (evt) => {
+  if (evt.data?.type === 'RUN_TEST') {
+    log('Received push-triggered test request');
+    runMsak(evt.data.payload || {});
+  }
+});
+
+if (getParam('run') === '1') {
+  log('Auto-running test from notification URL');
+  runMsak({
+    sid: getParam('sid'),
+    streams: getParam('streams'),
+    durationMs: getParam('durationMs')
+  });
+}
+
+
+// Where your msak-server is hosted
+const MSAK_BASE_WSS = 'wss://msakserver.calspeed.org/throughput/v1';
+// Default test knobs (can be overridden by push payload)
+const DEFAULT_STREAMS = 2;
+const DEFAULT_DURATION_MS = 5000;
+
+let running = false;
+
+function getParam(name) {
+  return new URL(location.href).searchParams.get(name);
+}
+
+async function runMsak(payload = {}) {
+  if (running) {
+    log('MSAK already running. Skipping duplicate run.');
+    return;
+  }
+  running = true;
+  try {
+
+    document.getElementById('subscribeBtn').disabled = true;
+    statusEl.textContent = 'Running test…';
+
+    const streams = Number(payload.streams ?? getParam('streams') ?? DEFAULT_STREAMS);
+    const durationMs = Number(payload.durationMs ?? getParam('durationMs') ?? DEFAULT_DURATION_MS);
+    const sid = payload.sid ?? getParam('sid') ?? null;
+
+    log(`Starting MSAK test (sid=${sid}, streams=${streams}, durationMs=${durationMs})`);
+
+    const client = new msak.Client('web-client', '0.3.1', {
+      onDownloadResult: r => {
+        log('Download result:', JSON.stringify(r));
+        sendResult('download', r, { sid });
+      },
+      onUploadResult: r => {
+        log('Upload result:', JSON.stringify(r));
+        sendResult('upload', r, { sid });
+      },
+      onError: e => {
+        log('MSAK error:', e.message || e);
+      }
+    });
+
+    await client.runThroughputTest({
+      downloadURL: `${MSAK_BASE_WSS}/download`,
+      uploadURL:   `${MSAK_BASE_WSS}/upload`,
+      streams,
+      durationMs
+    });
+
+    log('MSAK test complete.');
+    statusEl.textContent = 'Test complete.';
+
+  } catch (err) {
+    log('MSAK run error:', err.message || err);
+  } finally {
+    running = false;
+    document.getElementById('subscribeBtn').disabled = false;
+
+  }
+}
+
+async function sendResult(direction, r, { sid }) {
+  const goodput_bps = r.GoodputBitsPerSecond ?? r.goodput_bps ?? null;
+  const streams = r.Streams ?? r.streams ?? null;
+  const duration_ms = r.ElapsedTime ?? r.durationMs ?? null;
+
+  try {
+    const res = await fetch('/.netlify/functions/save-result', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        direction,
+        sid: sid ? Number(sid) : null,
+        goodput_bps,
+        streams,
+        duration_ms,
+        result_json: r
+      })
+    });
+
+    if (!res.ok) throw new Error(`Failed to store result (${res.status})`);
+    const data = await res.json();
+    log(`Result stored (${direction}):`, JSON.stringify(data));
+  } catch (err) {
+    log('Result save error:', err.message || err);
+  }
+}
