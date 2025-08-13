@@ -3,4 +3,4 @@
 
 [functions]
   node_bundler = "esbuild"
-  external_node_modules = ["web-push", "redis"]
+  external_node_modules = ["web-push", "@neondatabase/serverless"]
