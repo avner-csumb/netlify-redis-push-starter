@@ -280,7 +280,16 @@ async function runManualTest() {
 
   try {
     const sid = `manual-${Date.now()}`;
-    const client = new msak.Client('wss://msakserver.calspeed.org');
+    // const client = new msak.Client('wss://msakserver.calspeed.org');
+    const client = new msak.Client('web-client', '0.3.1');
+
+      client.metadata = {
+      ...(client.metadata || {}),
+      sid,
+      trigger: 'manual',
+      ua: navigator.userAgent
+    };
+
 
     // Shim for older version
     if (!client.runThroughputTest) {
