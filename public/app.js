@@ -1,25 +1,65 @@
-const logEl = document.getElementById('log');
-const statusEl = document.getElementById('status');
-function log(...args) { logEl.textContent += args.join(' ') + "\n"; }
+// const logEl = document.getElementById('log');
+// const statusEl = document.getElementById('status');
+// function log(...args) { logEl.textContent += args.join(' ') + "\n"; }
 
 
 // Shim for msak v0.3.1: add runThroughputTest(sid, streams, durationMs | {sid, streams, durationMs})
-if (window.msak && msak.Client && !msak.Client.prototype.runThroughputTest) {
+// if (window.msak && msak.Client && !msak.Client.prototype.runThroughputTest) {
+//   msak.Client.prototype.runThroughputTest = function (a, b, c) {
+//     let sid, streams, durationMs;
+//     if (a && typeof a === 'object') ({ sid, streams, durationMs } = a);
+//     else { sid = a; streams = b; durationMs = c; }
+
+//     try { if (streams) this.streams = streams; } catch {}
+//     try { if (durationMs) this.duration = durationMs; } catch {}
+
+//     if (sid) this.metadata = { ...(this.metadata || {}), sid };
+
+//     // v0.3.1 runs download+upload via start()
+//     return this.start();
+//   };
+// }
+
+const logEl = document.getElementById('log');
+const statusEl = document.getElementById('status');
+const runBtn = document.getElementById('runTestBtn');
+const resultDisplay = document.getElementById('resultDisplay');
+
+
+function log(...args) {
+  const line = `[${new Date().toISOString()}] ${args.join(' ')}\n`;
+  logEl.textContent += line;
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function updateStatus(text) {
+  statusEl.textContent = text;
+}
+
+
+// Shim for msak v0.3.1: add runThroughputTest(sid, streams, durationMs | {sid, streams, durationMs})
+
+
+if (self.msak?.Client && !msak.Client.prototype.runThroughputTest) {
   msak.Client.prototype.runThroughputTest = function (a, b, c) {
     let sid, streams, durationMs;
     if (a && typeof a === 'object') ({ sid, streams, durationMs } = a);
     else { sid = a; streams = b; durationMs = c; }
 
-    try { if (streams) this.streams = streams; } catch {}
-    try { if (durationMs) this.duration = durationMs; } catch {}
-
+    // Only set fields if they exist on this instance
+    if (typeof streams !== 'undefined' && 'streams' in this) {
+      try { this.streams = streams; } catch {}
+    }
+    if (typeof durationMs !== 'undefined' && ('duration' in this || 'durationMs' in this)) {
+      try { this.duration = durationMs; } catch {}
+      try { this.durationMs = durationMs; } catch {}
+    }
     if (sid) this.metadata = { ...(this.metadata || {}), sid };
 
-    // v0.3.1 runs download+upload via start()
+    // Preserve start() signature for 0.3.x
     return this.start();
   };
 }
-
 
 async function getVapidPublicKey() {
   const res = await fetch('/.netlify/functions/public-key');
@@ -218,3 +258,72 @@ async function sendResult(direction, r, { sid }) {
     log('Result save error:', err.message || err);
   }
 }
+
+
+// const statusEl = document.getElementById('status');
+// const logEl = document.getElementById('log');
+// const runBtn = document.getElementById('runTestBtn');
+
+// function log(msg) {
+//   console.log(msg);
+//   logEl.textContent += `[${new Date().toISOString()}] ${msg}\n`;
+//   logEl.scrollTop = logEl.scrollHeight;
+// }
+
+// function updateStatus(text) {
+//   statusEl.textContent = text;
+// }
+
+async function runManualTest() {
+  updateStatus('running...');
+  log('Starting MSAK test');
+
+  try {
+    const sid = `manual-${Date.now()}`;
+    const client = new msak.Client('wss://msakserver.calspeed.org');
+
+    // Shim for older version
+    if (!client.runThroughputTest) {
+      client.runThroughputTest = function (a, b, c) {
+        let sid, streams, durationMs;
+        if (a && typeof a === 'object') ({ sid, streams, durationMs } = a);
+        else { sid = a; streams = b; durationMs = c; }
+
+        if (streams) this.streams = streams;
+        if (durationMs) this.duration = durationMs;
+        if (sid) this.metadata = { ...(this.metadata || {}), sid };
+
+        return this.start();
+      };
+    }
+
+    const result = await client.runThroughputTest({
+      sid,
+      streams: 4,
+      durationMs: 3600
+    });
+
+    log(`Test finished: ↓ ${result.downloadGoodputMbps} Mbps, ↑ ${result.uploadGoodputMbps} Mbps, RTT: ${result.minRttMs} ms`);
+
+    // Optional: send to Netlify
+    const saveRes = await fetch('/.netlify/functions/save-result', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sid,
+        test_time: new Date().toISOString(),
+        result,
+        source: 'manual'
+      })
+    });
+
+    const saveJson = await saveRes.json();
+    log(`Saved to Neon: ${JSON.stringify(saveJson)}`);
+    updateStatus('done');
+  } catch (err) {
+    log(`Error: ${err.message}`);
+    updateStatus('error');
+  }
+}
+
+runBtn.addEventListener('click', runManualTest);
