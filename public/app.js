@@ -2,6 +2,25 @@ const logEl = document.getElementById('log');
 const statusEl = document.getElementById('status');
 function log(...args) { logEl.textContent += args.join(' ') + "\n"; }
 
+
+// Shim for msak v0.3.1: add runThroughputTest(sid, streams, durationMs | {sid, streams, durationMs})
+if (window.msak && msak.Client && !msak.Client.prototype.runThroughputTest) {
+  msak.Client.prototype.runThroughputTest = function (a, b, c) {
+    let sid, streams, durationMs;
+    if (a && typeof a === 'object') ({ sid, streams, durationMs } = a);
+    else { sid = a; streams = b; durationMs = c; }
+
+    try { if (streams) this.streams = streams; } catch {}
+    try { if (durationMs) this.duration = durationMs; } catch {}
+
+    if (sid) this.metadata = { ...(this.metadata || {}), sid };
+
+    // v0.3.1 runs download+upload via start()
+    return this.start();
+  };
+}
+
+
 async function getVapidPublicKey() {
   const res = await fetch('/.netlify/functions/public-key');
   if (!res.ok) {
@@ -118,6 +137,29 @@ async function runMsak(payload = {}) {
     const durationMs = Number(payload.durationMs ?? getParam('durationMs') ?? DEFAULT_DURATION_MS);
     const sid = payload.sid ?? getParam('sid') ?? null;
 
+    // log(`Starting MSAK test (sid=${sid}, streams=${streams}, durationMs=${durationMs})`);
+
+    // const client = new msak.Client('web-client', '0.3.1', {
+    //   onDownloadResult: r => {
+    //     log('Download result:', JSON.stringify(r));
+    //     sendResult('download', r, { sid });
+    //   },
+    //   onUploadResult: r => {
+    //     log('Upload result:', JSON.stringify(r));
+    //     sendResult('upload', r, { sid });
+    //   },
+    //   onError: e => {
+    //     log('MSAK error:', e.message || e);
+    //   }
+    // });
+
+    // await client.runThroughputTest({
+    //   downloadURL: `${MSAK_BASE_WSS}/download`,
+    //   uploadURL:   `${MSAK_BASE_WSS}/upload`,
+    //   streams,
+    //   durationMs
+    // });
+
     log(`Starting MSAK test (sid=${sid}, streams=${streams}, durationMs=${durationMs})`);
 
     const client = new msak.Client('web-client', '0.3.1', {
@@ -134,12 +176,9 @@ async function runMsak(payload = {}) {
       }
     });
 
-    await client.runThroughputTest({
-      downloadURL: `${MSAK_BASE_WSS}/download`,
-      uploadURL:   `${MSAK_BASE_WSS}/upload`,
-      streams,
-      durationMs
-    });
+
+    await client.runThroughputTest(sid, streams, durationMs);
+
 
     log('MSAK test complete.');
     statusEl.textContent = 'Test complete.';
