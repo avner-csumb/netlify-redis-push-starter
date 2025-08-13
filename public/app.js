@@ -333,6 +333,47 @@ async function runManualTest() {
   }
 }
 
+async function unsubscribe() {
+  updateStatus('unsubscribing…');
+  try {
+    const reg = await navigator.serviceWorker.getRegistration();
+    if (!reg) throw new Error('No service worker registration found.');
+
+    const sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      log('No existing push subscription to unsubscribe.');
+      updateStatus('not subscribed');
+      return;
+    }
+
+    // Unsubscribe from the browser
+    const unsubscribed = await sub.unsubscribe();
+    if (!unsubscribed) throw new Error('Failed to unsubscribe from push');
+
+    log('Unsubscribed from push in browser.');
+
+    // Also tell your backend to remove the subscription
+    const res = await fetch('/.netlify/functions/remove-subscription', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpoint: sub.endpoint })
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Backend remove failed (${res.status}): ${text}`);
+    }
+
+    const json = await res.json();
+    log('Removed from Neon:', JSON.stringify(json));
+    updateStatus('unsubscribed');
+  } catch (e) {
+    log('Unsubscribe error:', e.message);
+    updateStatus('error');
+  }
+}
+
+
 
 // async function runManualTest() {
 //   updateStatus('running...');
@@ -445,3 +486,6 @@ async function runManualTest() {
 // }
 
 runBtn.addEventListener('click', runManualTest);
+
+
+document.getElementById('unsubscribeBtn').addEventListener('click', unsubscribe);
