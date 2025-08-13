@@ -91,47 +91,76 @@ async function ensureServiceWorker() {
   return reg;
 }
 
-async function subscribe() {
-  statusEl.textContent = 'subscribing…';
-  try {
-    // Optional: make the permission state explicit in logs
-    if ('Notification' in window) log('Notification.permission =', Notification.permission);
 
+async function subscribe(opts = {}) {
+  updateStatus('subscribing…');
+  try {
     const reg = await ensureServiceWorker();
     const pub = await getVapidPublicKey();
-
     const sub = await reg.pushManager.subscribe({
       userVisibleOnly: true,
       applicationServerKey: urlBase64ToUint8Array(pub)
     });
 
-    log('Got subscription for endpoint:', sub.endpoint);
-
+    // include ttlHours if provided
     const res = await fetch('/.netlify/functions/store-subscription', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(sub.toJSON())
+      body: JSON.stringify({ ...sub.toJSON(), ttlHours: opts.ttlHours ?? null })
     });
 
-    // >>> Changed: show server error details
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Store failed (${res.status}): ${text}`);
-    }
-
-    const data = await res.json();
-    statusEl.textContent = 'subscribed';
-    log('Stored in Neon:', JSON.stringify(data));
+    if (!res.ok) throw new Error(`Store failed (${res.status}): ${await res.text()}`);
+    updateStatus(opts.ttlHours ? `subscribed (expires in ${opts.ttlHours}h)` : 'subscribed');
   } catch (e) {
-    statusEl.textContent = 'error';
+    updateStatus('error');
     log('Subscribe error:', e.message);
-    alert(e.message);
   }
 }
+
+// async function subscribe() {
+//   statusEl.textContent = 'subscribing…';
+//   try {
+//     // Optional: make the permission state explicit in logs
+//     if ('Notification' in window) log('Notification.permission =', Notification.permission);
+
+//     const reg = await ensureServiceWorker();
+//     const pub = await getVapidPublicKey();
+
+//     const sub = await reg.pushManager.subscribe({
+//       userVisibleOnly: true,
+//       applicationServerKey: urlBase64ToUint8Array(pub)
+//     });
+
+//     log('Got subscription for endpoint:', sub.endpoint);
+
+//     const res = await fetch('/.netlify/functions/store-subscription', {
+//       method: 'POST',
+//       headers: { 'Content-Type': 'application/json' },
+//       body: JSON.stringify(sub.toJSON())
+//     });
+
+//     // >>> Changed: show server error details
+//     if (!res.ok) {
+//       const text = await res.text();
+//       throw new Error(`Store failed (${res.status}): ${text}`);
+//     }
+
+//     const data = await res.json();
+//     statusEl.textContent = 'subscribed';
+//     log('Stored in Neon:', JSON.stringify(data));
+//   } catch (e) {
+//     statusEl.textContent = 'error';
+//     log('Subscribe error:', e.message);
+//     alert(e.message);
+//   }
+// }
 
 document.getElementById('subscribeBtn').addEventListener('click', subscribe);
 
 log('Ready. Click "Subscribe to Push".');
+
+document.getElementById('subscribeTemp4hBtn').addEventListener('click', () => subscribe({ ttlHours: 4 }));
+
 
 navigator.serviceWorker?.addEventListener('message', (evt) => {
   if (evt.data?.type === 'RUN_TEST') {

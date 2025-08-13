@@ -8,27 +8,50 @@ webpush.setVapidDetails(
   process.env.VAPID_PRIVATE_KEY
 );
 
+// Runs every 15 minutes
 export const handler = schedule('*/15 * * * *', async () => {
   const sql = neon(process.env.DATABASE_URL);
-  const rows = await sql`SELECT id, endpoint, p256dh, auth FROM push_subscriptions`;
+
+  // 1) Only active (non-expired) subscriptions
+  const rows = await sql`
+    SELECT id, endpoint, p256dh, auth
+    FROM push_subscriptions
+    WHERE app_expires_at IS NULL OR app_expires_at > now()
+  `;
+
+  // Tune these as you like (or per-row if you store custom prefs)
+  const DEFAULT_STREAMS = 2;
+  const DEFAULT_DURATION_MS = 5000;
 
   for (const r of rows) {
     const sub = { endpoint: r.endpoint, keys: { p256dh: r.p256dh, auth: r.auth } };
 
-        // ✅ 2. Construct push payload with sid and test options
+    // Payload your service worker/page expects
     const payload = {
       type: 'RUN_TEST',
-      sid: r.id,           // <— Subscription ID (foreign key to match in results)
-      streams: 2,
-      durationMs: 5000
+      payload: {
+        sid: r.id,                 // tie results back to this subscription
+        streams: DEFAULT_STREAMS,
+        durationMs: DEFAULT_DURATION_MS
+      },
+      ts: Date.now()
     };
 
     try {
-      await webpush.sendNotification(sub, JSON.stringify({ type: 'RUN_TEST', ts: Date.now() }));
+      await webpush.sendNotification(
+        sub,
+        JSON.stringify(payload),
+        {
+          TTL: 120,                // keep fresh; drop if not delivered quickly
+          urgency: 'high',         // hint: deliver sooner
+          topic: `run-test-${r.id}`// coalesce duplicates for same sub (when supported)
+        }
+      );
+
       await sql`UPDATE push_subscriptions SET last_push_at = now() WHERE id = ${r.id}`;
     } catch (err) {
-      // Automatically remove stale subscriptions on 404/410, same behavior you had in Redis
-      if (err.statusCode === 404 || err.statusCode === 410) {
+      // Clean up obviously dead subs
+      if (err?.statusCode === 404 || err?.statusCode === 410) {
         await sql`DELETE FROM push_subscriptions WHERE id = ${r.id}`;
       } else {
         console.error('Push error for', r.id, err?.statusCode, err?.message);
@@ -36,11 +59,65 @@ export const handler = schedule('*/15 * * * *', async () => {
     }
   }
 
-  // Optional: mirror Redis TTL by pruning old entries (30 days since last update)
-  await sql`DELETE FROM push_subscriptions WHERE updated_at < now() - interval '30 days'`;
+  // 2) Optional: prune expired temporary subs (keep if you want to retain history)
+  await sql`
+    DELETE FROM push_subscriptions
+    WHERE app_expires_at IS NOT NULL AND app_expires_at < now()
+  `;
+
+  // 3) Optional: your existing hygiene—stale entries with no updates for 30 days
+  await sql`
+    DELETE FROM push_subscriptions
+    WHERE updated_at < now() - interval '30 days'
+  `;
 
   return { statusCode: 200, body: 'push cycle done' };
 });
+
+
+// import { schedule } from '@netlify/functions';
+// import { neon } from '@neondatabase/serverless';
+// import webpush from 'web-push';
+
+// webpush.setVapidDetails(
+//   process.env.VAPID_CONTACT || 'mailto:admin@example.com',
+//   process.env.VAPID_PUBLIC_KEY,
+//   process.env.VAPID_PRIVATE_KEY
+// );
+
+// export const handler = schedule('*/15 * * * *', async () => {
+//   const sql = neon(process.env.DATABASE_URL);
+//   const rows = await sql`SELECT id, endpoint, p256dh, auth FROM push_subscriptions`;
+
+//   for (const r of rows) {
+//     const sub = { endpoint: r.endpoint, keys: { p256dh: r.p256dh, auth: r.auth } };
+
+//         // ✅ 2. Construct push payload with sid and test options
+//     const payload = {
+//       type: 'RUN_TEST',
+//       sid: r.id,           // <— Subscription ID (foreign key to match in results)
+//       streams: 2,
+//       durationMs: 5000
+//     };
+
+//     try {
+//       await webpush.sendNotification(sub, JSON.stringify({ type: 'RUN_TEST', ts: Date.now() }));
+//       await sql`UPDATE push_subscriptions SET last_push_at = now() WHERE id = ${r.id}`;
+//     } catch (err) {
+//       // Automatically remove stale subscriptions on 404/410, same behavior you had in Redis
+//       if (err.statusCode === 404 || err.statusCode === 410) {
+//         await sql`DELETE FROM push_subscriptions WHERE id = ${r.id}`;
+//       } else {
+//         console.error('Push error for', r.id, err?.statusCode, err?.message);
+//       }
+//     }
+//   }
+
+//   // Optional: mirror Redis TTL by pruning old entries (30 days since last update)
+//   await sql`DELETE FROM push_subscriptions WHERE updated_at < now() - interval '30 days'`;
+
+//   return { statusCode: 200, body: 'push cycle done' };
+// });
 
 
 // const { schedule } = require("@netlify/functions");
