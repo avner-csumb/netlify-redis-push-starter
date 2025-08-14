@@ -175,6 +175,17 @@ async function runManualTest() {
   }
 }
 
+async function subscribeFor1HourThenUnsubscribe() {
+  log('Subscribing for 1 hour');
+  await subscribe({ ttlHours: 1 });
+  log('Subscribed. Will unsubscribe after 1 hour.');
+
+  setTimeout(() => {
+    log('Auto-unsubscribing after 1 hour');
+    unsubscribe();
+  }, 60 * 60 * 1000);
+}
+
 async function sendResult(direction, r, { sid }) {
   const goodput_bps = r.GoodputBitsPerSecond ?? r.goodput_bps ?? null;
   const streams = r.Streams ?? r.streams ?? null;
@@ -196,6 +207,8 @@ async function sendResult(direction, r, { sid }) {
 subscribeBtn?.addEventListener('click', () => subscribe());
 unsubscribeBtn?.addEventListener('click', unsubscribe);
 runBtn?.addEventListener('click', runManualTest);
+subscribeOnceBtn?.addEventListener('click', subscribeFor1HourThenUnsubscribe);
+
 
 navigator.serviceWorker?.addEventListener('message', (evt) => {
   if (evt.data?.type === 'RUN_TEST') {
