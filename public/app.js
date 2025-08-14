@@ -1,5 +1,7 @@
 // app.js
 
+// app.js
+
 const logEl = document.getElementById('log');
 const statusEl = document.getElementById('status');
 const resultDisplay = document.getElementById('resultDisplay');
@@ -138,6 +140,19 @@ async function runManualTest() {
     });
 
     client.metadata = { sid, trigger: 'manual', ua: navigator.userAgent };
+
+    // ✅ Add shim for v0.3.1 if needed
+    if (!client.runThroughputTest) {
+      client.runThroughputTest = function (a, b, c) {
+        let sid, streams, durationMs;
+        if (a && typeof a === 'object') ({ sid, streams, durationMs } = a);
+        else { sid = a; streams = b; durationMs = c; }
+        if (streams) this.streams = streams;
+        if (durationMs) this.duration = durationMs;
+        if (sid) this.metadata = { ...(this.metadata || {}), sid };
+        return this.start();
+      };
+    }
 
     await client.runThroughputTest({ sid, streams: 4, durationMs: 3600 });
 
