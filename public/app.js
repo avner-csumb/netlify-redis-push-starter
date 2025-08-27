@@ -40,11 +40,20 @@ const runBtn = document.getElementById('runTestBtn');
 
 
 
+// function extractGoodputBps(r) {
+//   if (r && typeof r.goodput_bps === 'number') return r.goodput_bps;     // newer shapes
+//   if (r && typeof r.goodput === 'number')       return Math.round(r.goodput * 1e6); // v0.3.x: Mbps → bps
+//   return null;
+// }
+
 function extractGoodputBps(r) {
-  if (r && typeof r.goodput_bps === 'number') return r.goodput_bps;     // newer shapes
-  if (r && typeof r.goodput === 'number')       return Math.round(r.goodput * 1e6); // v0.3.x: Mbps → bps
+  if (!r) return null;
+  if (typeof r.goodput_bps === 'number') return r.goodput_bps;      // already bps
+  if (typeof r.goodput === 'number')     return Math.round(r.goodput * 1e6); // Mbps → bps
   return null;
 }
+
+
 
 async function ensureSubscription() {
   const reg = await navigator.serviceWorker.ready;
@@ -515,11 +524,22 @@ async function runManualTest() {
       markFinal('download');
     }
     if (!sawFinalUL && lastUL) {
-      const bps = extractGoodputBps(lastUL);
+
+      const bps  = extractGoodputBps(r);
       const mbps = (bps || 0) / 1e6;
+      log(`↓ ${mbps.toFixed(2)} Mbps`);
+
       log(`↑ ${mbps.toFixed(2)} Mbps (fallback)`);
       resultDisplay.textContent += `Upload (fallback final):\n${JSON.stringify(lastUL, null, 2)}\n\n`;
-      sendResult('upload', lastUL, { sid, session_id: currentSession?.id, streams, durationMs, goodput_bps_override: bps });
+
+
+      sendResult('download', r, { sid, session_id: currentSession?.id, streams, durationMs, goodput_bps_override: bps });
+
+      // const bps = extractGoodputBps(lastUL);
+      // const mbps = (bps || 0) / 1e6;
+      // log(`↑ ${mbps.toFixed(2)} Mbps (fallback)`);
+      // resultDisplay.textContent += `Upload (fallback final):\n${JSON.stringify(lastUL, null, 2)}\n\n`;
+      // sendResult('upload', lastUL, { sid, session_id: currentSession?.id, streams, durationMs, goodput_bps_override: bps });
       markFinal('upload');
     }
 
@@ -851,37 +871,67 @@ async function oneHourRunThenCsv() {
 
 
 
-async function sendResult(direction, r, { sid, session_id, streams, durationMs }) {
-  const numericSid = typeof sid === 'number' || /^\d+$/.test(String(sid))
-    ? Number(sid) : undefined;
+// async function sendResult(direction, r, { sid, session_id, streams, durationMs }) {
+//   const numericSid = typeof sid === 'number' || /^\d+$/.test(String(sid))
+//     ? Number(sid) : undefined;
+
+//   const body = {
+//     direction,                          // 'download' | 'upload'
+//     session_id: session_id ?? null,     // keep null if unknown
+//     goodput_bps: r?.goodput_bps ?? null,
+//     streams: streams ?? null,
+//     duration_ms: durationMs ?? null,
+//     result_json: r ?? null
+//   };
+//   if (numericSid !== undefined) body.sub_id = numericSid;
+
+//   try {
+//     const res = await fetch('/.netlify/functions/save-result', {
+//       method: 'POST',
+//       headers: { 'content-type': 'application/json' },
+//       body: JSON.stringify(body)
+//     });
+
+//     const text = await res.text().catch(() => '');
+//     if (!res.ok) {
+//       log('save-result failed', res.status, text);
+//     } else {
+//       log('save-result ok', text);      // <-- will include { ok:true, id,... } if your function RETURNINGs
+//     }
+//   } catch (e) {
+//     log('save-result fetch error', e?.message || e);
+//   }
+// }
+
+async function sendResult(direction, r, { sid, session_id, streams, durationMs, goodput_bps_override }) {
+  // only include sub_id if numeric
+  const numericSid = typeof sid === 'number' || /^\d+$/.test(String(sid)) ? Number(sid) : undefined;
+
+  // prefer explicit override, else derive from r
+  const bps = (typeof goodput_bps_override === 'number')
+    ? goodput_bps_override
+    : extractGoodputBps(r);
 
   const body = {
-    direction,                          // 'download' | 'upload'
-    session_id: session_id ?? null,     // keep null if unknown
-    goodput_bps: r?.goodput_bps ?? null,
+    direction,
+    session_id: session_id ?? null,
+    goodput_bps: bps,                  // <-- always a number (or null)
     streams: streams ?? null,
     duration_ms: durationMs ?? null,
     result_json: r ?? null
   };
   if (numericSid !== undefined) body.sub_id = numericSid;
 
-  try {
-    const res = await fetch('/.netlify/functions/save-result', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body)
-    });
-
-    const text = await res.text().catch(() => '');
-    if (!res.ok) {
-      log('save-result failed', res.status, text);
-    } else {
-      log('save-result ok', text);      // <-- will include { ok:true, id,... } if your function RETURNINGs
-    }
-  } catch (e) {
-    log('save-result fetch error', e?.message || e);
-  }
+  const res = await fetch('/.netlify/functions/save-result', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  const text = await res.text().catch(()=> '');
+  if (!res.ok) log('save-result failed', res.status, text);
+  else         log('save-result ok', text);
 }
+
 
 
 subscribeBtn?.addEventListener('click', () => subscribe());
