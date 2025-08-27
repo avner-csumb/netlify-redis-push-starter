@@ -306,70 +306,128 @@ async function runManualTest() {
   resultDisplay.textContent = '';
   log('Starting MSAK test');
 
+  // test args used for logging + save-result
+  const sid = `manual-${Date.now()}`;
+  const streams = 4;
+  const durationMs = 3600; // ≈3.6s test; change if you want longer
+
   try {
-    const sid = `manual-${Date.now()}`;
-    let finalDownload = null;
-    let finalUpload = null;
-
     const client = new msak.Client('web-client', '0.3.1', {
-      // onDownloadResult: (r) => { finalDownload = r; },
-      // onUploadResult:   (r) => { finalUpload = r; },
-
       onDownloadResult: r => {
+        log('[DL] cb final=', String(!!r?.final));
         if (r?.final) {
-          finalDownload = r;
-          const streams = 4, durationMs = 3600;
+          // show immediately
+          const mbps = (r.goodput_bps || 0) / 1e6;
+          log(`↓ ${mbps.toFixed(2)} Mbps`);
+          resultDisplay.textContent += `Download (final):\n${JSON.stringify(r, null, 2)}\n\n`;
+
+          // persist
           sendResult('download', r, { sid, session_id: currentSession?.id, streams, durationMs });
           markFinal('download');
         }
       },
       onUploadResult: r => {
+        log('[UL] cb final=', String(!!r?.final));
         if (r?.final) {
-          finalUpload = r;
-          const streams = 4, durationMs = 3600;
+          // show immediately
+          const mbps = (r.goodput_bps || 0) / 1e6;
+          log(`↑ ${mbps.toFixed(2)} Mbps`);
+          resultDisplay.textContent += `Upload (final):\n${JSON.stringify(r, null, 2)}\n\n`;
+
+          // persist
           sendResult('upload', r, { sid, session_id: currentSession?.id, streams, durationMs });
           markFinal('upload');
         }
       },
-      onError:          (e) => log('MSAK error:', e.stack || e.message || e)
+      onError: e => log('MSAK error:', e && (e.stack || e.message) || e)
     });
 
+    // v0.3.1 shim
+    if (!client.runThroughputTest) client.runThroughputTest = (args) => client.start(args);
+
+    // optional metadata
     client.metadata = { sid, trigger: 'manual', ua: navigator.userAgent };
 
-    // ✅ Add shim for v0.3.1 if needed
-    if (!client.runThroughputTest) {
-      client.runThroughputTest = function (a, b, c) {
-        let sid, streams, durationMs;
-        if (a && typeof a === 'object') ({ sid, streams, durationMs } = a);
-        else { sid = a; streams = b; durationMs = c; }
-        if (streams) this.streams = streams;
-        if (durationMs) this.duration = durationMs;
-        if (sid) this.metadata = { ...(this.metadata || {}), sid };
-        return this.start();
-      };
-    }
+    // run
+    await client.runThroughputTest({ streams, durationMs });
 
-    await client.runThroughputTest({ sid, streams: 4, durationMs: 3600 });
-
-    if (finalDownload) {
-      const mbpsDown = (finalDownload.goodput_bps || 0) / 1e6;
-      log(`↓ ${mbpsDown.toFixed(2)} Mbps`);
-      resultDisplay.textContent += `Download:\n${JSON.stringify(finalDownload, null, 2)}\n\n`;
-      await sendResult('download', finalDownload, { sid, streams: 4, durationMs: 3600 });
-    }
-
-    if (finalUpload) {
-      const mbpsUp = (finalUpload.goodput_bps || 0) / 1e6;
-      log(`↑ ${mbpsUp.toFixed(2)} Mbps`);
-      resultDisplay.textContent += `Upload:\n${JSON.stringify(finalUpload, null, 2)}\n\n`;
-      await sendResult('upload', finalUpload, { sid, streams: 4, durationMs: 3600 });
-    }
     updateStatus('complete');
   } catch (err) {
-    log(`Error: ${err.message}`);
+    log('runManualTest error:', err && err.message || err);
     updateStatus('error');
   }
 }
+
+
+// async function runManualTest() {
+//   updateStatus('running...');
+//   resultDisplay.textContent = '';
+//   log('Starting MSAK test');
+
+//   try {
+//     const sid = `manual-${Date.now()}`;
+//     let finalDownload = null;
+//     let finalUpload = null;
+
+//     const client = new msak.Client('web-client', '0.3.1', {
+//       // onDownloadResult: (r) => { finalDownload = r; },
+//       // onUploadResult:   (r) => { finalUpload = r; },
+
+//       onDownloadResult: r => {
+//         if (r?.final) {
+//           finalDownload = r;
+//           const streams = 4, durationMs = 3600;
+//           sendResult('download', r, { sid, session_id: currentSession?.id, streams, durationMs });
+//           markFinal('download');
+//         }
+//       },
+//       onUploadResult: r => {
+//         if (r?.final) {
+//           finalUpload = r;
+//           const streams = 4, durationMs = 3600;
+//           sendResult('upload', r, { sid, session_id: currentSession?.id, streams, durationMs });
+//           markFinal('upload');
+//         }
+//       },
+//       onError:          (e) => log('MSAK error:', e.stack || e.message || e)
+//     });
+
+//     client.metadata = { sid, trigger: 'manual', ua: navigator.userAgent };
+
+//     // ✅ Add shim for v0.3.1 if needed
+//     if (!client.runThroughputTest) {
+//       client.runThroughputTest = function (a, b, c) {
+//         let sid, streams, durationMs;
+//         if (a && typeof a === 'object') ({ sid, streams, durationMs } = a);
+//         else { sid = a; streams = b; durationMs = c; }
+//         if (streams) this.streams = streams;
+//         if (durationMs) this.duration = durationMs;
+//         if (sid) this.metadata = { ...(this.metadata || {}), sid };
+//         return this.start();
+//       };
+//     }
+
+//     await client.runThroughputTest({ sid, streams: 4, durationMs: 3600 });
+
+//     if (finalDownload) {
+//       const mbpsDown = (finalDownload.goodput_bps || 0) / 1e6;
+//       log(`↓ ${mbpsDown.toFixed(2)} Mbps`);
+//       resultDisplay.textContent += `Download:\n${JSON.stringify(finalDownload, null, 2)}\n\n`;
+//       await sendResult('download', finalDownload, { sid, streams: 4, durationMs: 3600 });
+//     }
+
+//     if (finalUpload) {
+//       const mbpsUp = (finalUpload.goodput_bps || 0) / 1e6;
+//       log(`↑ ${mbpsUp.toFixed(2)} Mbps`);
+//       resultDisplay.textContent += `Upload:\n${JSON.stringify(finalUpload, null, 2)}\n\n`;
+//       await sendResult('upload', finalUpload, { sid, streams: 4, durationMs: 3600 });
+//     }
+//     updateStatus('complete');
+//   } catch (err) {
+//     log(`Error: ${err.message}`);
+//     updateStatus('error');
+//   }
+// }
 
 // async function subscribeFor1HourThenUnsubscribe() {
 //   log('Subscribing for 1 hour');
