@@ -143,8 +143,10 @@ function setButtons({ subscribed, blocked, supported }) {
     return;
   }
   updateStatus(subscribed ? 'subscribed' : 'not subscribed');
-  subscribeBtn.hidden = subscribed;
-  unsubscribeBtn.hidden = !subscribed;
+
+  if (subscribeBtn)   subscribeBtn.hidden   = !!subscribed;
+  if (unsubscribeBtn) unsubscribeBtn.hidden = !subscribed;
+
 }
 
 async function refreshSubStatus() {
@@ -485,8 +487,8 @@ async function sendResult(direction, r, { sid, session_id, streams, durationMs }
 // subscribeBtn?.addEventListener('click', () => subscribe());
 // unsubscribeBtn?.addEventListener('click', unsubscribe);
 
-subscribeBtn && (subscribeBtn.hidden = subscribed);
-unsubscribeBtn && (unsubscribeBtn.hidden = !subscribed);
+// subscribeBtn && (subscribeBtn.hidden = subscribed);
+// unsubscribeBtn && (unsubscribeBtn.hidden = !subscribed);
 
 
 runBtn?.addEventListener('click', runManualTest);
