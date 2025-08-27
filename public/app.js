@@ -311,32 +311,54 @@ async function exportCurrentSessionCsv() {
 async function runMsak({ sid, streams = 2, durationMs = 5000 } = {}) {
   try {
     const client = new msak.Client('web-client', '0.3.1', {
+
+      // onDownloadResult: r => {
+      //   if (r?.final) {
+      //     const mbps = (r.goodput_bps || 0) / 1e6;
+      //     log(`↓ ${mbps.toFixed(2)} Mbps`);
+      //     sendResult('download', r, {
+      //       sid,
+      //       session_id: currentSession?.id,
+      //       streams,
+      //       durationMs
+      //     });
+      //     markFinal('download');
+      //   }
+      // },
+      // onUploadResult: r => {
+      //   if (r?.final) {
+      //     const mbps = (r.goodput_bps || 0) / 1e6;
+      //     log(`↑ ${mbps.toFixed(2)} Mbps`);
+      //     sendResult('upload', r, {
+      //       sid,
+      //       session_id: currentSession?.id,
+      //       streams,
+      //       durationMs
+      //     });
+      //     markFinal('upload');
+      //   }
+      // },
+
       onDownloadResult: r => {
-        if (r?.final) {
-          const mbps = (r.goodput_bps || 0) / 1e6;
-          log(`↓ ${mbps.toFixed(2)} Mbps`);
-          sendResult('download', r, {
-            sid,
-            session_id: currentSession?.id,
-            streams,
-            durationMs
-          });
-          markFinal('download');
-        }
-      },
-      onUploadResult: r => {
-        if (r?.final) {
-          const mbps = (r.goodput_bps || 0) / 1e6;
-          log(`↑ ${mbps.toFixed(2)} Mbps`);
-          sendResult('upload', r, {
-            sid,
-            session_id: currentSession?.id,
-            streams,
-            durationMs
-          });
-          markFinal('upload');
-        }
-      },
+      if (r?.final) {
+        const mbps = (r.goodput_bps || 0) / 1e6;
+        log(`↓ ${mbps.toFixed(2)} Mbps`);
+        resultDisplay.textContent += `Download (final):\n${JSON.stringify(r, null, 2)}\n\n`;
+
+        sendResult('download', r, { sid, session_id: currentSession?.id, streams, durationMs });
+        markFinal('download');
+      }
+    },
+    onUploadResult: r => {
+      if (r?.final) {
+        const mbps = (r.goodput_bps || 0) / 1e6;
+        log(`↑ ${mbps.toFixed(2)} Mbps`);
+        resultDisplay.textContent += `Upload (final):\n${JSON.stringify(r, null, 2)}\n\n`;
+
+        sendResult('upload', r, { sid, session_id: currentSession?.id, streams, durationMs });
+        markFinal('upload');
+      }
+    },
       onError: e => log('MSAK error:', e?.stack || e?.message || e)
     });
 
@@ -426,32 +448,53 @@ async function runManualTest() {
 
   try {
     const client = new msak.Client('web-client', '0.3.1', {
+
       onDownloadResult: r => {
-        log('[DL] cb final=', String(!!r?.final));
         if (r?.final) {
-          // show immediately
           const mbps = (r.goodput_bps || 0) / 1e6;
           log(`↓ ${mbps.toFixed(2)} Mbps`);
           resultDisplay.textContent += `Download (final):\n${JSON.stringify(r, null, 2)}\n\n`;
 
-          // persist
           sendResult('download', r, { sid, session_id: currentSession?.id, streams, durationMs });
           markFinal('download');
         }
       },
       onUploadResult: r => {
-        log('[UL] cb final=', String(!!r?.final));
         if (r?.final) {
-          // show immediately
           const mbps = (r.goodput_bps || 0) / 1e6;
           log(`↑ ${mbps.toFixed(2)} Mbps`);
           resultDisplay.textContent += `Upload (final):\n${JSON.stringify(r, null, 2)}\n\n`;
 
-          // persist
           sendResult('upload', r, { sid, session_id: currentSession?.id, streams, durationMs });
           markFinal('upload');
         }
       },
+      // onDownloadResult: r => {
+      //   log('[DL] cb final=', String(!!r?.final));
+      //   if (r?.final) {
+      //     // show immediately
+      //     const mbps = (r.goodput_bps || 0) / 1e6;
+      //     log(`↓ ${mbps.toFixed(2)} Mbps`);
+      //     resultDisplay.textContent += `Download (final):\n${JSON.stringify(r, null, 2)}\n\n`;
+
+      //     // persist
+      //     sendResult('download', r, { sid, session_id: currentSession?.id, streams, durationMs });
+      //     markFinal('download');
+      //   }
+      // },
+      // onUploadResult: r => {
+      //   log('[UL] cb final=', String(!!r?.final));
+      //   if (r?.final) {
+      //     // show immediately
+      //     const mbps = (r.goodput_bps || 0) / 1e6;
+      //     log(`↑ ${mbps.toFixed(2)} Mbps`);
+      //     resultDisplay.textContent += `Upload (final):\n${JSON.stringify(r, null, 2)}\n\n`;
+
+      //     // persist
+      //     sendResult('upload', r, { sid, session_id: currentSession?.id, streams, durationMs });
+      //     markFinal('upload');
+      //   }
+      // },
       onError: e => log('MSAK error:', e && (e.stack || e.message) || e)
     });
 
