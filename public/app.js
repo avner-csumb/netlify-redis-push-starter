@@ -523,25 +523,49 @@ async function runManualTest() {
       sendResult('download', lastDL, { sid, session_id: currentSession?.id, streams, durationMs, goodput_bps_override: bps });
       markFinal('download');
     }
-    if (!sawFinalUL && lastUL) {
 
-      const bps  = extractGoodputBps(r);
+    // Fallback if no explicit finals were flagged
+    if (!sawFinalDL && lastDL) {
+      const bps = extractGoodputBps(lastDL);
       const mbps = (bps || 0) / 1e6;
-      log(`↓ ${mbps.toFixed(2)} Mbps`);
+      log(`↓ ${mbps.toFixed(2)} Mbps (fallback)`);
+      resultDisplay.textContent += `Download (fallback final):\n${JSON.stringify(lastDL, null, 2)}\n\n`;
+      sendResult('download', lastDL, {
+        sid, session_id: currentSession?.id, streams, durationMs, goodput_bps_override: bps
+      });
+      markFinal('download');
+    }
 
+    if (!sawFinalUL && lastUL) {
+      const bps = extractGoodputBps(lastUL);
+      const mbps = (bps || 0) / 1e6;
       log(`↑ ${mbps.toFixed(2)} Mbps (fallback)`);
       resultDisplay.textContent += `Upload (fallback final):\n${JSON.stringify(lastUL, null, 2)}\n\n`;
-
-
-      sendResult('download', r, { sid, session_id: currentSession?.id, streams, durationMs, goodput_bps_override: bps });
-
-      // const bps = extractGoodputBps(lastUL);
-      // const mbps = (bps || 0) / 1e6;
-      // log(`↑ ${mbps.toFixed(2)} Mbps (fallback)`);
-      // resultDisplay.textContent += `Upload (fallback final):\n${JSON.stringify(lastUL, null, 2)}\n\n`;
-      // sendResult('upload', lastUL, { sid, session_id: currentSession?.id, streams, durationMs, goodput_bps_override: bps });
+      sendResult('upload', lastUL, {
+        sid, session_id: currentSession?.id, streams, durationMs, goodput_bps_override: bps
+      });
       markFinal('upload');
     }
+
+    // if (!sawFinalUL && lastUL) {
+
+    //   const bps  = extractGoodputBps(r);
+    //   const mbps = (bps || 0) / 1e6;
+    //   log(`↓ ${mbps.toFixed(2)} Mbps`);
+
+    //   log(`↑ ${mbps.toFixed(2)} Mbps (fallback)`);
+    //   resultDisplay.textContent += `Upload (fallback final):\n${JSON.stringify(lastUL, null, 2)}\n\n`;
+
+
+    //   sendResult('download', r, { sid, session_id: currentSession?.id, streams, durationMs, goodput_bps_override: bps });
+
+    //   // const bps = extractGoodputBps(lastUL);
+    //   // const mbps = (bps || 0) / 1e6;
+    //   // log(`↑ ${mbps.toFixed(2)} Mbps (fallback)`);
+    //   // resultDisplay.textContent += `Upload (fallback final):\n${JSON.stringify(lastUL, null, 2)}\n\n`;
+    //   // sendResult('upload', lastUL, { sid, session_id: currentSession?.id, streams, durationMs, goodput_bps_override: bps });
+    //   markFinal('upload');
+    // }
 
     updateStatus('complete');
   } catch (e) {
