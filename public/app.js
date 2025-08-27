@@ -1,6 +1,34 @@
 // app.js
 
-// app.js
+let currentSession = null; // { id, startedAt, timerId }
+
+
+// Track per-test completion (download + upload finals)
+let pendingFinal = { download: false, upload: false };
+
+function markFinal(direction) {
+  pendingFinal[direction] = true;
+  if (pendingFinal.download && pendingFinal.upload) {
+    // one “test run” completed
+    pendingFinal = { download: false, upload: false };
+    if (currentSession) {
+      currentSession.runCount = (currentSession.runCount || 0) + 1;
+      dbg.runCount.textContent = String(currentSession.runCount);
+    }
+  }
+}
+
+
+const dbg = {
+  local: document.getElementById('dbg-active-local'),
+  server: document.getElementById('dbg-active-server'),
+  subId: document.getElementById('dbg-sub-id'),
+  runCount: document.getElementById('dbg-run-count'),
+  expiresAt: document.getElementById('dbg-expires-at'),
+  countdown: document.getElementById('dbg-countdown')
+};
+
+
 
 const logEl = document.getElementById('log');
 const statusEl = document.getElementById('status');
@@ -8,6 +36,88 @@ const resultDisplay = document.getElementById('resultDisplay');
 const subscribeBtn = document.getElementById('subscribeBtn');
 const unsubscribeBtn = document.getElementById('unsubscribeBtn');
 const runBtn = document.getElementById('runTestBtn');
+
+
+async function ensureSubscription() {
+  const reg = await navigator.serviceWorker.ready;
+  let sub = await reg.pushManager.getSubscription();
+  if (!sub) {
+    const pub = await getVapidPublicKey(); // you already have this
+    sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(pub)
+    });
+  }
+  // remember endpoint for unsubscribe fallback
+  if (sub?.endpoint) localStorage.setItem('lastEndpoint', sub.endpoint);
+  return sub;
+}
+
+function toServerSubscription(sub) {
+  const json = sub?.toJSON?.() || {};
+  return {
+    endpoint: sub?.endpoint,
+    p256dh: json?.keys?.p256dh,
+    auth: json?.keys?.auth,
+    expiration_time: sub?.expirationTime ?? null
+  };
+}
+
+
+async function updateDebugLocal() {
+  const reg = await navigator.serviceWorker.getRegistration();
+  const sub = await reg?.pushManager.getSubscription();
+  dbg.local.textContent = sub ? 'yes' : 'no';
+  dbg.subId.textContent = currentSession?.subId ?? '—';
+  dbg.expiresAt.textContent = currentSession?.expiresAt ?? '—';
+}
+
+async function updateDebugServer() {
+  const reg = await navigator.serviceWorker.getRegistration();
+  const sub = await reg?.pushManager.getSubscription();
+  if (!sub) { dbg.server.textContent = 'no'; return; }
+  try {
+    const r = await fetch('/.netlify/functions/check-subscription', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ endpoint: sub.endpoint })
+    });
+    const data = await r.json();
+    dbg.server.textContent = data.found && !data.expired ? 'yes' : 'no (expired)';
+    if (data.id && !currentSession?.subId) {
+      currentSession = currentSession || {};
+      currentSession.subId = data.id;
+      dbg.subId.textContent = String(data.id);
+    }
+    if (data.app_expires_at && !currentSession?.expiresAt) {
+      currentSession = currentSession || {};
+      currentSession.expiresAt = data.app_expires_at;
+      dbg.expiresAt.textContent = data.app_expires_at;
+      startCountdown();
+    }
+  } catch {
+    dbg.server.textContent = 'error';
+  }
+}
+
+function startCountdown() {
+  clearCountdown();
+  if (!currentSession?.expiresAt) { dbg.countdown.textContent = '—'; return; }
+  function tick() {
+    const ms = new Date(currentSession.expiresAt).getTime() - Date.now();
+    if (ms <= 0) { dbg.countdown.textContent = 'expired'; clearCountdown(); return; }
+    const m = Math.floor(ms/60000), s = Math.floor((ms%60000)/1000);
+    dbg.countdown.textContent = `${m}m ${s}s`;
+  }
+  tick();
+  currentSession.countdownTimerId = setInterval(tick, 1000);
+}
+function clearCountdown() {
+  if (currentSession?.countdownTimerId) {
+    clearInterval(currentSession.countdownTimerId);
+    currentSession.countdownTimerId = null;
+  }
+}
 
 function log(...args) {
   const line = `[${new Date().toISOString()}] ${args.join(' ')}\n`;
@@ -88,7 +198,9 @@ async function subscribe(opts = {}) {
     const res = await fetch('/.netlify/functions/store-subscription', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...sub.toJSON(), ttlHours: opts.ttlHours ?? null })
+      // body: JSON.stringify({ ...sub.toJSON(), ttlHours: opts.ttlHours ?? null })
+      body: JSON.stringify({ ...toServerSubscription(sub), ttlHours: opts.ttlHours ?? null, ua: navigator.userAgent })
+
     });
 
     if (!res.ok) throw new Error(`Store failed (${res.status}): ${await res.text()}`);
@@ -123,6 +235,64 @@ async function unsubscribe() {
   }
 }
 
+async function exportCurrentSessionCsv() {
+  if (!currentSession?.id) return;
+  const url = new URL('/.netlify/functions/export-results', location.origin);
+  url.searchParams.set('session_id', currentSession.id);
+  url.searchParams.set('from', currentSession.startedAt);
+  url.searchParams.set('to', new Date().toISOString());
+
+  const res = await fetch(url.toString());
+  if (!res.ok) throw new Error('export failed');
+  const blob = await res.blob();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `msak_results_${currentSession.id}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+
+  if (currentSession?.timerId) clearTimeout(currentSession.timerId);
+  currentSession = null;
+}
+
+
+async function runMsak({ sid, streams = 2, durationMs = 5000 } = {}) {
+  try {
+    const client = new msak.Client('web-client', '0.3.1', {
+
+      onDownloadResult: r => {
+        if (r?.final) {
+          finalDownload = r;
+          const streams = 4, durationMs = 3600; // your test args below
+          sendResult('download', r, { sid, session_id: currentSession?.id, streams, durationMs });
+          markFinal('download');
+        }
+      },
+      onUploadResult: r => {
+        if (r?.final) {
+          finalUpload = r;
+          const streams = 4, durationMs = 3600;
+          sendResult('upload', r, { sid, session_id: currentSession?.id, streams, durationMs });
+          markFinal('upload');
+        }
+      },
+
+      onError: e => log('MSAK error:', e.stack || e.message || e)
+    });
+
+    // shim for 0.3.1
+    if (!client.runThroughputTest) {
+      client.runThroughputTest = (args) => client.start(args);
+    }
+
+    await client.runThroughputTest({ streams, durationMs });
+  } catch (e) {
+    log('runMsak error:', e.message || e);
+  }
+}
+
+
 async function runManualTest() {
   updateStatus('running...');
   resultDisplay.textContent = '';
@@ -134,8 +304,21 @@ async function runManualTest() {
     let finalUpload = null;
 
     const client = new msak.Client('web-client', '0.3.1', {
-      onDownloadResult: (r) => { finalDownload = r; },
-      onUploadResult:   (r) => { finalUpload = r; },
+      // onDownloadResult: (r) => { finalDownload = r; },
+      // onUploadResult:   (r) => { finalUpload = r; },
+
+      onDownloadResult: r => {
+        if (r?.final) {
+          sendResult('download', r, { sid, session_id: currentSession?.id });
+          markFinal('download'); // <-- increment after download final
+        }
+      },
+      onUploadResult: r => {
+        if (r?.final) {
+          sendResult('upload', r, { sid, session_id: currentSession?.id });
+          markFinal('upload'); // <-- increment after upload final
+        }
+      },
       onError:          (e) => log('MSAK error:', e.stack || e.message || e)
     });
 
@@ -156,16 +339,28 @@ async function runManualTest() {
 
     await client.runThroughputTest({ sid, streams: 4, durationMs: 3600 });
 
+    // if (finalDownload) {
+    //   log(`↓ ${finalDownload.goodput.toFixed(2)} Mbps`);
+    //   resultDisplay.textContent += `Download:\n${JSON.stringify(finalDownload, null, 2)}\n\n`;
+    //   await sendResult('download', finalDownload, { sid });
+    // }
+
+    // if (finalUpload) {
+    //   log(`↑ ${finalUpload.goodput.toFixed(2)} Mbps`);
+    //   resultDisplay.textContent += `Upload:\n${JSON.stringify(finalUpload, null, 2)}\n\n`;
+    //   await sendResult('upload', finalUpload, { sid });
+    // }
+
     if (finalDownload) {
-      log(`↓ ${finalDownload.goodput.toFixed(2)} Mbps`);
+      const mbps = (finalDownload.goodput_bps || 0) / 1e6;
+      log(`↓ ${mbps.toFixed(2)} Mbps`);
       resultDisplay.textContent += `Download:\n${JSON.stringify(finalDownload, null, 2)}\n\n`;
-      await sendResult('download', finalDownload, { sid });
     }
 
     if (finalUpload) {
-      log(`↑ ${finalUpload.goodput.toFixed(2)} Mbps`);
+      const mbps = (finalUpload.goodput_bps || 0) / 1e6;
+      log(`↑ ${mbps.toFixed(2)} Mbps`);
       resultDisplay.textContent += `Upload:\n${JSON.stringify(finalUpload, null, 2)}\n\n`;
-      await sendResult('upload', finalUpload, { sid });
     }
 
     updateStatus('complete');
@@ -175,47 +370,145 @@ async function runManualTest() {
   }
 }
 
-async function subscribeFor1HourThenUnsubscribe() {
-  log('Subscribing for 1 hour');
-  await subscribe({ ttlHours: 1 });
-  log('Subscribed. Will unsubscribe after 1 hour.');
+// async function subscribeFor1HourThenUnsubscribe() {
+//   log('Subscribing for 1 hour');
+//   await subscribe({ ttlHours: 1 });
+//   log('Subscribed. Will unsubscribe after 1 hour.');
 
-  setTimeout(() => {
-    log('Auto-unsubscribing after 1 hour');
-    unsubscribe();
-  }, 60 * 60 * 1000);
-}
+//   setTimeout(() => {
+//     log('Auto-unsubscribing after 1 hour');
+//     unsubscribe();
+//   }, 60 * 60 * 1000);
+// }
 
-async function sendResult(direction, r, { sid }) {
-  const goodput_bps = r.GoodputBitsPerSecond ?? r.goodput_bps ?? null;
-  const streams = r.Streams ?? r.streams ?? null;
-  const duration_ms = r.ElapsedTime ?? r.durationMs ?? null;
+
+async function oneHourRunThenCsv() {
+  // fresh session
+  if (currentSession?.countdownTimerId) clearInterval(currentSession.countdownTimerId);
+  if (currentSession?.timerId) clearTimeout(currentSession.timerId);
+
+  currentSession = {
+    id: crypto.randomUUID(),
+    startedAt: new Date().toISOString(),
+    subId: null,
+    expiresAt: null,
+    runCount: 0,
+    countdownTimerId: null,
+    timerId: null
+  };
 
   try {
-    const res = await fetch('/.netlify/functions/save-result', {
+    // Ensure browser-side PushSubscription (no TTL here)
+    const browserSub = await ensureSubscription();
+
+    // Register/renew on server with 1-hour app expiry
+    const r = await fetch('/.netlify/functions/store-subscription', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ direction, sid, goodput_bps, streams, duration_ms, result_json: r })
+      headers: { 'content-type': 'application/json' },
+      // body: JSON.stringify({
+      //   ...toServerSubscription(browserSub),
+      //   ua: navigator.userAgent,
+      //   ttlHours: 1
+      // })
+      // body: JSON.stringify({ ...toServerSubscription(sub), ttlHours: opts.ttlHours ?? null })
+      body: JSON.stringify({
+        ...toServerSubscription(browserSub),
+        ua: navigator.userAgent,
+        ttlHours: 1
+      })
+
     });
-    if (!res.ok) throw new Error(`Failed to store result (${res.status})`);
-    log(`Result stored (${direction}):`, await res.text());
-  } catch (err) {
-    log('Result save error:', err.message || err);
+
+    if (!r.ok) throw new Error(`store-subscription failed (${r.status})`);
+    const data = await r.json();
+    if (!data?.ok) throw new Error('store-subscription returned not ok');
+
+    currentSession.subId = data.id ?? null;
+    currentSession.expiresAt = data.app_expires_at ?? null;
+
+    log('Starting 1-hour session: ' + currentSession.id);
+    await updateDebugLocal();     // local subscription state
+    await updateDebugServer();    // server truth
+    startCountdown();             // live countdown to app_expires_at
+
+    // Safety timer: auto-unsub + export after 60m
+    currentSession.timerId = setTimeout(async () => {
+      await unsubscribe();             // removes locally + calls remove-subscription
+      await exportCurrentSessionCsv(); // triggers CSV download
+    }, 60 * 60 * 1000);
+
+  } catch (e) {
+    log('oneHourRunThenCsv error: ' + (e?.message || e));
+    // best-effort cleanup
+    if (currentSession?.countdownTimerId) clearInterval(currentSession.countdownTimerId);
+    if (currentSession?.timerId) clearTimeout(currentSession.timerId);
+    currentSession = null;
   }
 }
+
+
+// async function sendResult(direction, r, { sid, session_id }) {
+//   const body = {
+//     direction,
+//     sid,
+//     sub_id: sid,                  // ok to send both; backend uses either
+//     session_id,                   // <-- new
+//     goodput_bps: r.goodput_bps,
+//     streams,
+//     duration_ms: durationMs,
+//     result_json: r
+//   };
+//   await fetch('/.netlify/functions/save-result', {
+//     method: 'POST',
+//     headers: { 'content-type': 'application/json' },
+//     body: JSON.stringify(body)
+//   });
+// }
+
+
+async function sendResult(direction, r, { sid, session_id, streams, durationMs }) {
+  const body = {
+    direction,
+    sid,
+    sub_id: sid,
+    session_id,
+    goodput_bps: r.goodput_bps,
+    streams,
+    duration_ms: durationMs,
+    result_json: r
+  };
+  await fetch('/.netlify/functions/save-result', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+}
+
 
 subscribeBtn?.addEventListener('click', () => subscribe());
 unsubscribeBtn?.addEventListener('click', unsubscribe);
 runBtn?.addEventListener('click', runManualTest);
-subscribeOnceBtn?.addEventListener('click', subscribeFor1HourThenUnsubscribe);
+// subscribeOnceBtn?.addEventListener('click', subscribeFor1HourThenUnsubscribe);
 
+document.getElementById('subscribeOnceBtn')?.addEventListener('click', oneHourRunThenCsv);
+
+
+// navigator.serviceWorker?.addEventListener('message', (evt) => {
+//   if (evt.data?.type === 'RUN_TEST') {
+//     log('Received push-triggered test request');
+//     runManualTest();
+//   }
+// });
 
 navigator.serviceWorker?.addEventListener('message', (evt) => {
   if (evt.data?.type === 'RUN_TEST') {
     log('Received push-triggered test request');
-    runManualTest();
+    runMsak(evt.data.payload || {}); // pass payload containing sid/streams/durationMs
   }
 });
+
+
+
 
 if (navigator.permissions?.query) {
   try {
@@ -226,525 +519,3 @@ if (navigator.permissions?.query) {
 
 refreshSubStatus();
 
-
-
-// // const logEl = document.getElementById('log');
-// // const statusEl = document.getElementById('status');
-// // function log(...args) { logEl.textContent += args.join(' ') + "\n"; }
-
-
-// // Shim for msak v0.3.1: add runThroughputTest(sid, streams, durationMs | {sid, streams, durationMs})
-// // if (window.msak && msak.Client && !msak.Client.prototype.runThroughputTest) {
-// //   msak.Client.prototype.runThroughputTest = function (a, b, c) {
-// //     let sid, streams, durationMs;
-// //     if (a && typeof a === 'object') ({ sid, streams, durationMs } = a);
-// //     else { sid = a; streams = b; durationMs = c; }
-
-// //     try { if (streams) this.streams = streams; } catch {}
-// //     try { if (durationMs) this.duration = durationMs; } catch {}
-
-// //     if (sid) this.metadata = { ...(this.metadata || {}), sid };
-
-// //     // v0.3.1 runs download+upload via start()
-// //     return this.start();
-// //   };
-// // }
-
-// const logEl = document.getElementById('log');
-// const statusEl = document.getElementById('status');
-// const runBtn = document.getElementById('runTestBtn');
-// const resultDisplay = document.getElementById('resultDisplay');
-
-
-// function log(...args) {
-//   const line = `[${new Date().toISOString()}] ${args.join(' ')}\n`;
-//   logEl.textContent += line;
-//   logEl.scrollTop = logEl.scrollHeight;
-// }
-
-// function updateStatus(text) {
-//   statusEl.textContent = text;
-// }
-
-
-// // Shim for msak v0.3.1: add runThroughputTest(sid, streams, durationMs | {sid, streams, durationMs})
-
-
-// if (self.msak?.Client && !msak.Client.prototype.runThroughputTest) {
-//   msak.Client.prototype.runThroughputTest = function (a, b, c) {
-//     let sid, streams, durationMs;
-//     if (a && typeof a === 'object') ({ sid, streams, durationMs } = a);
-//     else { sid = a; streams = b; durationMs = c; }
-
-//     // Only set fields if they exist on this instance
-//     if (typeof streams !== 'undefined' && 'streams' in this) {
-//       try { this.streams = streams; } catch {}
-//     }
-//     if (typeof durationMs !== 'undefined' && ('duration' in this || 'durationMs' in this)) {
-//       try { this.duration = durationMs; } catch {}
-//       try { this.durationMs = durationMs; } catch {}
-//     }
-//     if (sid) this.metadata = { ...(this.metadata || {}), sid };
-
-//     // Preserve start() signature for 0.3.x
-//     return this.start();
-//   };
-// }
-
-// async function getVapidPublicKey() {
-//   const res = await fetch('/.netlify/functions/public-key');
-//   if (!res.ok) {
-//     const text = await res.text();
-//     throw new Error(`public-key failed (${res.status}): ${text}`);
-//   }
-//   const { publicKey } = await res.json();
-//   if (!publicKey) throw new Error('Missing VAPID_PUBLIC_KEY on server');
-//   log('VAPID public key length:', publicKey.length);
-//   return publicKey;
-// }
-
-// // helper to convert Base64URL to UInt8Array
-// function urlBase64ToUint8Array(base64String) {
-//   const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
-//   const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
-//   const rawData = atob(base64);
-//   const outputArray = new Uint8Array(rawData.length);
-//   for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i);
-//   return outputArray;
-// }
-
-// async function ensureServiceWorker() {
-//   if (!('serviceWorker' in navigator)) throw new Error('Service Worker not supported');
-//   const reg = await navigator.serviceWorker.register('/service-worker.js');
-//   await navigator.serviceWorker.ready;
-//   log('Service worker registered:', reg.scope);
-//   return reg;
-// }
-
-
-// async function subscribe(opts = {}) {
-//   updateStatus('subscribing…');
-//   try {
-//     const reg = await ensureServiceWorker();
-//     const pub = await getVapidPublicKey();
-//     const sub = await reg.pushManager.subscribe({
-//       userVisibleOnly: true,
-//       applicationServerKey: urlBase64ToUint8Array(pub)
-//     });
-
-//     // include ttlHours if provided
-//     const res = await fetch('/.netlify/functions/store-subscription', {
-//       method: 'POST',
-//       headers: { 'Content-Type': 'application/json' },
-//       body: JSON.stringify({ ...sub.toJSON(), ttlHours: opts.ttlHours ?? null })
-//     });
-
-//     if (!res.ok) throw new Error(`Store failed (${res.status}): ${await res.text()}`);
-//     updateStatus(opts.ttlHours ? `subscribed (expires in ${opts.ttlHours}h)` : 'subscribed');
-//   } catch (e) {
-//     updateStatus('error');
-//     log('Subscribe error:', e.message);
-//   }
-// }
-
-// // async function subscribe() {
-// //   statusEl.textContent = 'subscribing…';
-// //   try {
-// //     // Optional: make the permission state explicit in logs
-// //     if ('Notification' in window) log('Notification.permission =', Notification.permission);
-
-// //     const reg = await ensureServiceWorker();
-// //     const pub = await getVapidPublicKey();
-
-// //     const sub = await reg.pushManager.subscribe({
-// //       userVisibleOnly: true,
-// //       applicationServerKey: urlBase64ToUint8Array(pub)
-// //     });
-
-// //     log('Got subscription for endpoint:', sub.endpoint);
-
-// //     const res = await fetch('/.netlify/functions/store-subscription', {
-// //       method: 'POST',
-// //       headers: { 'Content-Type': 'application/json' },
-// //       body: JSON.stringify(sub.toJSON())
-// //     });
-
-// //     // >>> Changed: show server error details
-// //     if (!res.ok) {
-// //       const text = await res.text();
-// //       throw new Error(`Store failed (${res.status}): ${text}`);
-// //     }
-
-// //     const data = await res.json();
-// //     statusEl.textContent = 'subscribed';
-// //     log('Stored in Neon:', JSON.stringify(data));
-// //   } catch (e) {
-// //     statusEl.textContent = 'error';
-// //     log('Subscribe error:', e.message);
-// //     alert(e.message);
-// //   }
-// // }
-
-// document.getElementById('subscribeBtn').addEventListener('click', subscribe);
-
-// log('Ready. Click "Subscribe to Push".');
-
-// document.getElementById('subscribeTemp4hBtn').addEventListener('click', () => subscribe({ ttlHours: 4 }));
-
-
-// navigator.serviceWorker?.addEventListener('message', (evt) => {
-//   if (evt.data?.type === 'RUN_TEST') {
-//     log('Received push-triggered test request');
-//     runMsak(evt.data.payload || {});
-//   }
-// });
-
-// if (getParam('run') === '1') {
-//   log('Auto-running test from notification URL');
-//   runMsak({
-//     sid: getParam('sid'),
-//     streams: getParam('streams'),
-//     durationMs: getParam('durationMs')
-//   });
-// }
-
-
-// // Where your msak-server is hosted
-// const MSAK_BASE_WSS = 'wss://msakserver.calspeed.org/throughput/v1';
-// // Default test knobs (can be overridden by push payload)
-// const DEFAULT_STREAMS = 2;
-// const DEFAULT_DURATION_MS = 5000;
-
-// let running = false;
-
-// function getParam(name) {
-//   return new URL(location.href).searchParams.get(name);
-// }
-
-// async function runMsak(payload = {}) {
-//   if (running) {
-//     log('MSAK already running. Skipping duplicate run.');
-//     return;
-//   }
-//   running = true;
-//   try {
-
-//     document.getElementById('subscribeBtn').disabled = true;
-//     statusEl.textContent = 'Running test…';
-
-//     const streams = Number(payload.streams ?? getParam('streams') ?? DEFAULT_STREAMS);
-//     const durationMs = Number(payload.durationMs ?? getParam('durationMs') ?? DEFAULT_DURATION_MS);
-//     const sid = payload.sid ?? getParam('sid') ?? null;
-
-//     // log(`Starting MSAK test (sid=${sid}, streams=${streams}, durationMs=${durationMs})`);
-
-//     // const client = new msak.Client('web-client', '0.3.1', {
-//     //   onDownloadResult: r => {
-//     //     log('Download result:', JSON.stringify(r));
-//     //     sendResult('download', r, { sid });
-//     //   },
-//     //   onUploadResult: r => {
-//     //     log('Upload result:', JSON.stringify(r));
-//     //     sendResult('upload', r, { sid });
-//     //   },
-//     //   onError: e => {
-//     //     log('MSAK error:', e.message || e);
-//     //   }
-//     // });
-
-//     // await client.runThroughputTest({
-//     //   downloadURL: `${MSAK_BASE_WSS}/download`,
-//     //   uploadURL:   `${MSAK_BASE_WSS}/upload`,
-//     //   streams,
-//     //   durationMs
-//     // });
-
-//     log(`Starting MSAK test (sid=${sid}, streams=${streams}, durationMs=${durationMs})`);
-
-//     const client = new msak.Client('web-client', '0.3.1', {
-//       onDownloadResult: r => {
-//         log('Download result:', JSON.stringify(r));
-//         sendResult('download', r, { sid });
-//       },
-//       onUploadResult: r => {
-//         log('Upload result:', JSON.stringify(r));
-//         sendResult('upload', r, { sid });
-//       },
-//       onError: e => {
-//         log('MSAK error:', e.message || e);
-//       }
-//     });
-
-
-//     await client.runThroughputTest(sid, streams, durationMs);
-
-
-//     log('MSAK test complete.');
-//     statusEl.textContent = 'Test complete.';
-
-//   } catch (err) {
-//     log('MSAK run error:', err.message || err);
-//   } finally {
-//     running = false;
-//     document.getElementById('subscribeBtn').disabled = false;
-
-//   }
-// }
-
-// async function sendResult(direction, r, { sid }) {
-//   const goodput_bps = r.GoodputBitsPerSecond ?? r.goodput_bps ?? null;
-//   const streams = r.Streams ?? r.streams ?? null;
-//   const duration_ms = r.ElapsedTime ?? r.durationMs ?? null;
-
-//   try {
-//     const res = await fetch('/.netlify/functions/save-result', {
-//       method: 'POST',
-//       headers: { 'Content-Type': 'application/json' },
-//       body: JSON.stringify({
-//         direction,
-//         sid: sid ? Number(sid) : null,
-//         goodput_bps,
-//         streams,
-//         duration_ms,
-//         result_json: r
-//       })
-//     });
-
-//     if (!res.ok) throw new Error(`Failed to store result (${res.status})`);
-//     const data = await res.json();
-//     log(`Result stored (${direction}):`, JSON.stringify(data));
-//   } catch (err) {
-//     log('Result save error:', err.message || err);
-//   }
-// }
-
-
-// // const statusEl = document.getElementById('status');
-// // const logEl = document.getElementById('log');
-// // const runBtn = document.getElementById('runTestBtn');
-
-// // function log(msg) {
-// //   console.log(msg);
-// //   logEl.textContent += `[${new Date().toISOString()}] ${msg}\n`;
-// //   logEl.scrollTop = logEl.scrollHeight;
-// // }
-
-// // function updateStatus(text) {
-// //   statusEl.textContent = text;
-// // }
-
-
-// async function runManualTest() {
-//   updateStatus('running...');
-//   resultDisplay.textContent = '';
-//   log('Starting MSAK test');
-
-//   try {
-//     const sid = `manual-${Date.now()}`;
-
-//     let finalDownload = null;
-//     let finalUpload = null;
-
-//     const client = new msak.Client('web-client', '0.3.1', {
-//       onDownloadResult: (r) => {
-//         finalDownload = r;
-//       },
-//       onUploadResult: (r) => {
-//         finalUpload = r;
-//       },
-//       onError: (e) => {
-//         log('MSAK error:', e.message || e);
-//         updateStatus('error');
-//       }
-//     });
-
-//     client.metadata = {
-//       sid,
-//       trigger: 'manual',
-//       ua: navigator.userAgent
-//     };
-
-//     await client.runThroughputTest({
-//       sid,
-//       streams: 4,
-//       durationMs: 3600
-//     });
-
-//     log('MSAK test complete.');
-
-//     // ✅ Only log the final values
-//     if (finalDownload) {
-//       log(`↓ ${finalDownload.goodput.toFixed(2)} Mbps`);
-//       resultDisplay.textContent += `Download:\n${JSON.stringify(finalDownload, null, 2)}\n\n`;
-//       await sendResult('download', finalDownload, { sid });
-//     }
-
-//     if (finalUpload) {
-//       log(`↑ ${finalUpload.goodput.toFixed(2)} Mbps`);
-//       resultDisplay.textContent += `Upload:\n${JSON.stringify(finalUpload, null, 2)}\n\n`;
-//       await sendResult('upload', finalUpload, { sid });
-//     }
-
-//     updateStatus('complete');
-//   } catch (err) {
-//     log(`Error: ${err.message}`);
-//     updateStatus('error');
-//   }
-// }
-
-// async function unsubscribe() {
-//   updateStatus('unsubscribing…');
-//   try {
-//     const reg = await navigator.serviceWorker.getRegistration();
-//     if (!reg) throw new Error('No service worker registration found.');
-
-//     const sub = await reg.pushManager.getSubscription();
-//     if (!sub) {
-//       log('No existing push subscription to unsubscribe.');
-//       updateStatus('not subscribed');
-//       return;
-//     }
-
-//     // Unsubscribe from the browser
-//     const unsubscribed = await sub.unsubscribe();
-//     if (!unsubscribed) throw new Error('Failed to unsubscribe from push');
-
-//     log('Unsubscribed from push in browser.');
-
-//     // Also tell your backend to remove the subscription
-//     const res = await fetch('/.netlify/functions/remove-subscription', {
-//       method: 'POST',
-//       headers: { 'Content-Type': 'application/json' },
-//       body: JSON.stringify({ endpoint: sub.endpoint })
-//     });
-
-//     if (!res.ok) {
-//       const text = await res.text();
-//       throw new Error(`Backend remove failed (${res.status}): ${text}`);
-//     }
-
-//     const json = await res.json();
-//     log('Removed from Neon:', JSON.stringify(json));
-//     updateStatus('unsubscribed');
-//   } catch (e) {
-//     log('Unsubscribe error:', e.message);
-//     updateStatus('error');
-//   }
-// }
-
-
-
-// // async function runManualTest() {
-// //   updateStatus('running...');
-// //   resultDisplay.textContent = '';
-// //   log('Starting MSAK test');
-
-// //   try {
-// //     const sid = `manual-${Date.now()}`;
-
-// //     const client = new msak.Client('web-client', '0.3.1', {
-// //       onDownloadResult: async (r) => {
-// //         log('Download result:', JSON.stringify(r));
-// //         await sendResult('download', r, { sid });
-// //         updateStatus('download done');
-// //         resultDisplay.textContent += `Download:\n${JSON.stringify(r, null, 2)}\n\n`;
-// //       },
-// //       onUploadResult: async (r) => {
-// //         log('Upload result:', JSON.stringify(r));
-// //         await sendResult('upload', r, { sid });
-// //         updateStatus('upload done');
-// //         resultDisplay.textContent += `Upload:\n${JSON.stringify(r, null, 2)}\n\n`;
-// //       },
-// //       onError: (e) => {
-// //         log('MSAK error:', e.message || e);
-// //         updateStatus('error');
-// //       }
-// //     });
-
-// //     client.metadata = {
-// //       sid,
-// //       trigger: 'manual',
-// //       ua: navigator.userAgent
-// //     };
-
-// //     await client.runThroughputTest({
-// //       sid,
-// //       streams: 4,
-// //       durationMs: 3600
-// //     });
-
-// //     log('MSAK test complete.');
-// //     updateStatus('complete');
-// //   } catch (err) {
-// //     log(`Error: ${err.message}`);
-// //     updateStatus('error');
-// //   }
-// // }
-
-
-
-// // async function runManualTest() {
-// //   updateStatus('running...');
-// //   log('Starting MSAK test');
-
-// //   try {
-// //     const sid = `manual-${Date.now()}`;
-// //     // const client = new msak.Client('wss://msakserver.calspeed.org');
-// //     const client = new msak.Client('web-client', '0.3.1');
-
-// //       client.metadata = {
-// //       ...(client.metadata || {}),
-// //       sid,
-// //       trigger: 'manual',
-// //       ua: navigator.userAgent
-// //     };
-
-
-// //     // Shim for older version
-// //     if (!client.runThroughputTest) {
-// //       client.runThroughputTest = function (a, b, c) {
-// //         let sid, streams, durationMs;
-// //         if (a && typeof a === 'object') ({ sid, streams, durationMs } = a);
-// //         else { sid = a; streams = b; durationMs = c; }
-
-// //         if (streams) this.streams = streams;
-// //         if (durationMs) this.duration = durationMs;
-// //         if (sid) this.metadata = { ...(this.metadata || {}), sid };
-
-// //         return this.start();
-// //       };
-// //     }
-
-// //     const result = await client.runThroughputTest({
-// //       sid,
-// //       streams: 4,
-// //       durationMs: 3600
-// //     });
-
-// //     log(`Test finished: ↓ ${result.downloadGoodputMbps} Mbps, ↑ ${result.uploadGoodputMbps} Mbps, RTT: ${result.minRttMs} ms`);
-
-// //     // Optional: send to Netlify
-// //     const saveRes = await fetch('/.netlify/functions/save-result', {
-// //       method: 'POST',
-// //       headers: { 'Content-Type': 'application/json' },
-// //       body: JSON.stringify({
-// //         sid,
-// //         test_time: new Date().toISOString(),
-// //         result,
-// //         source: 'manual'
-// //       })
-// //     });
-
-// //     const saveJson = await saveRes.json();
-// //     log(`Saved to Neon: ${JSON.stringify(saveJson)}`);
-// //     updateStatus('done');
-// //   } catch (err) {
-// //     log(`Error: ${err.message}`);
-// //     updateStatus('error');
-// //   }
-// // }
-
-// runBtn.addEventListener('click', runManualTest);
-
-
-// document.getElementById('unsubscribeBtn').addEventListener('click', unsubscribe);

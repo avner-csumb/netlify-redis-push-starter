@@ -4,11 +4,21 @@ export async function handler(event) {
   if (event.httpMethod !== 'POST') {
     return { statusCode: 405, body: 'Only POST' };
   }
-  let body;
-  try { body = JSON.parse(event.body || '{}'); }
+
+  let b;
+  try { b = JSON.parse(event.body || '{}'); }
   catch { return { statusCode: 400, body: 'Invalid JSON' }; }
 
-  const { direction, sid, goodput_bps, streams, duration_ms, result_json } = body;
+  const {
+    direction,            // 'download' | 'upload'
+    sid, sub_id,          // optional subscriber id (either name is fine)
+    session_id,           // <-- new
+    goodput_bps,
+    streams,
+    duration_ms,
+    result_json
+  } = b;
+
   if (!direction || !['download','upload'].includes(direction)) {
     return { statusCode: 400, body: 'Bad direction' };
   }
@@ -16,8 +26,17 @@ export async function handler(event) {
   const sql = neon(process.env.DATABASE_URL);
   try {
     await sql`
-      INSERT INTO msak_results (sub_id, direction, goodput_bps, streams, duration_ms, result_json)
-      VALUES (${sid || null}, ${direction}, ${goodput_bps}, ${streams}, ${duration_ms}, ${result_json ? JSON.stringify(result_json) : null})
+      INSERT INTO msak_results
+        (sub_id, session_id, test_time, direction, goodput_bps, streams, duration_ms, result_json)
+      VALUES
+        (${sub_id ?? sid ?? null},
+         ${session_id ?? null},
+         now(),
+         ${direction},
+         ${goodput_bps ?? null},
+         ${streams ?? null},
+         ${duration_ms ?? null},
+         ${result_json ? JSON.stringify(result_json) : null})
     `;
     return { statusCode: 200, body: JSON.stringify({ ok: true }) };
   } catch (e) {

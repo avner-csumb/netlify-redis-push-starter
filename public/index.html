@@ -26,6 +26,17 @@
   <br><br>
 
 
+  <section style="margin-top:1rem;">
+  <h2>Debug</h2>
+  <div><strong>Active subscription (local):</strong> <span id="dbg-active-local">—</span></div>
+  <div><strong>Active subscription (server):</strong> <span id="dbg-active-server">—</span></div>
+  <div><strong>Subscription ID:</strong> <span id="dbg-sub-id">—</span></div>
+  <div><strong>Tests run (this 1-hour session):</strong> <span id="dbg-run-count">0</span></div>
+  <div><strong>Expires at:</strong> <span id="dbg-expires-at">—</span></div>
+  <div><strong>Countdown:</strong> <span id="dbg-countdown">—</span></div>
+</section>
+
+
 <!-- 
   <button id="subscribeBtn">Subscribe to Push (indefinitely)</button>
 
@@ -64,6 +75,19 @@
   <script src="https://unpkg.com/@m-lab/msak@0.3.1/dist/msak.js"></script>
 
 
+  <script>
+  (function () {
+    const _Client = window.msak && window.msak.Client;
+    if (!_Client) return;
+    window.msak.Client = function (...args) {
+      const c = new _Client(...args);
+      if (typeof c.runThroughputTest !== 'function') {
+        c.runThroughputTest = (opts) => c.start(opts);
+      }
+      return c;
+    };
+  })();
+</script>
 
   <script src="/app.js"></script>
 </body>
