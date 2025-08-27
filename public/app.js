@@ -38,6 +38,14 @@ const unsubscribeBtn = document.getElementById('unsubscribeBtn');
 const runBtn = document.getElementById('runTestBtn');
 
 
+
+
+function extractGoodputBps(r) {
+  if (r && typeof r.goodput_bps === 'number') return r.goodput_bps;     // newer shapes
+  if (r && typeof r.goodput === 'number')       return Math.round(r.goodput * 1e6); // v0.3.x: Mbps → bps
+  return null;
+}
+
 async function ensureSubscription() {
   const reg = await navigator.serviceWorker.ready;
   let sub = await reg.pushManager.getSubscription();
@@ -436,6 +444,7 @@ async function runMsak({ sid, streams = 2, durationMs = 5000 } = {}) {
 // }
 
 
+
 async function runManualTest() {
   updateStatus('running...');
   resultDisplay.textContent = '';
@@ -456,10 +465,11 @@ async function runManualTest() {
         if (!printedKeys && r) { printedKeys = true; log('Download keys:', Object.keys(r).join(','), 'final=', String(r.final)); }
         if (r?.final === true) {
           sawFinalDL = true;
-          const mbps = (r.goodput_bps || 0) / 1e6;
+          const bps = extractGoodputBps(r);
+          const mbps = (bps || 0) / 1e6;
           log(`↓ ${mbps.toFixed(2)} Mbps`);
           resultDisplay.textContent += `Download (final):\n${JSON.stringify(r, null, 2)}\n\n`;
-          sendResult('download', r, { sid, session_id: currentSession?.id, streams, durationMs }); // logs ok/failed
+          sendResult('download', r, { sid, session_id: currentSession?.id, streams, durationMs, goodput_bps_override: bps });
           markFinal('download');
         }
       },
@@ -468,10 +478,11 @@ async function runManualTest() {
         if (!printedKeys && r) { printedKeys = true; log('Upload keys:', Object.keys(r).join(','), 'final=', String(r.final)); }
         if (r?.final === true) {
           sawFinalUL = true;
-          const mbps = (r.goodput_bps || 0) / 1e6;
+          const bps = extractGoodputBps(r);
+          const mbps = (bps || 0) / 1e6;
           log(`↑ ${mbps.toFixed(2)} Mbps`);
           resultDisplay.textContent += `Upload (final):\n${JSON.stringify(r, null, 2)}\n\n`;
-          sendResult('upload', r, { sid, session_id: currentSession?.id, streams, durationMs });
+          sendResult('upload', r, { sid, session_id: currentSession?.id, streams, durationMs, goodput_bps_override: bps });
           markFinal('upload');
         }
       },
@@ -494,19 +505,21 @@ async function runManualTest() {
     client.metadata = { sid, trigger: 'manual', ua: navigator.userAgent };
     await client.runThroughputTest({ streams, durationMs });
 
-    // 🔁 Fallback if SDK never flagged final=true
+    // Fallback if no explicit finals were flagged
     if (!sawFinalDL && lastDL) {
-      const r = lastDL; const mbps = (r.goodput_bps || 0) / 1e6;
+      const bps = extractGoodputBps(lastDL);
+      const mbps = (bps || 0) / 1e6;
       log(`↓ ${mbps.toFixed(2)} Mbps (fallback)`);
-      resultDisplay.textContent += `Download (fallback final):\n${JSON.stringify(r, null, 2)}\n\n`;
-      sendResult('download', r, { sid, session_id: currentSession?.id, streams, durationMs });
+      resultDisplay.textContent += `Download (fallback final):\n${JSON.stringify(lastDL, null, 2)}\n\n`;
+      sendResult('download', lastDL, { sid, session_id: currentSession?.id, streams, durationMs, goodput_bps_override: bps });
       markFinal('download');
     }
     if (!sawFinalUL && lastUL) {
-      const r = lastUL; const mbps = (r.goodput_bps || 0) / 1e6;
+      const bps = extractGoodputBps(lastUL);
+      const mbps = (bps || 0) / 1e6;
       log(`↑ ${mbps.toFixed(2)} Mbps (fallback)`);
-      resultDisplay.textContent += `Upload (fallback final):\n${JSON.stringify(r, null, 2)}\n\n`;
-      sendResult('upload', r, { sid, session_id: currentSession?.id, streams, durationMs });
+      resultDisplay.textContent += `Upload (fallback final):\n${JSON.stringify(lastUL, null, 2)}\n\n`;
+      sendResult('upload', lastUL, { sid, session_id: currentSession?.id, streams, durationMs, goodput_bps_override: bps });
       markFinal('upload');
     }
 
@@ -516,6 +529,89 @@ async function runManualTest() {
     updateStatus('error');
   }
 }
+
+
+// async function runManualTest() {
+//   updateStatus('running...');
+//   resultDisplay.textContent = '';
+//   log('Starting MSAK test');
+
+//   const sid = `manual-${Date.now()}`;
+//   const streams = 4;
+//   const durationMs = 5000;
+
+//   let lastDL = null, lastUL = null;
+//   let sawFinalDL = false, sawFinalUL = false;
+//   let printedKeys = false;
+
+//   try {
+//     const client = new msak.Client('web-client', '0.3.1', {
+//       onDownloadResult: r => {
+
+//         lastDL = r;
+//         if (!printedKeys && r) { printedKeys = true; log('Download keys:', Object.keys(r).join(','), 'final=', String(r.final)); }
+//         if (r?.final === true) {
+//           sawFinalDL = true;
+//           const mbps = (r.goodput_bps || 0) / 1e6;
+//           log(`↓ ${mbps.toFixed(2)} Mbps`);
+//           resultDisplay.textContent += `Download (final):\n${JSON.stringify(r, null, 2)}\n\n`;
+//           sendResult('download', r, { sid, session_id: currentSession?.id, streams, durationMs }); // logs ok/failed
+//           markFinal('download');
+//         }
+//       },
+//       onUploadResult: r => {
+//         lastUL = r;
+//         if (!printedKeys && r) { printedKeys = true; log('Upload keys:', Object.keys(r).join(','), 'final=', String(r.final)); }
+//         if (r?.final === true) {
+//           sawFinalUL = true;
+//           const mbps = (r.goodput_bps || 0) / 1e6;
+//           log(`↑ ${mbps.toFixed(2)} Mbps`);
+//           resultDisplay.textContent += `Upload (final):\n${JSON.stringify(r, null, 2)}\n\n`;
+//           sendResult('upload', r, { sid, session_id: currentSession?.id, streams, durationMs });
+//           markFinal('upload');
+//         }
+//       },
+//       onError: e => log('MSAK error:', e?.stack || e?.message || e)
+//     });
+
+//     // 0.3.1 shim
+//     if (!client.runThroughputTest) {
+//       client.runThroughputTest = function (a, b, c) {
+//         let _sid, _streams, _durationMs;
+//         if (a && typeof a === 'object') ({ sid: _sid, streams: _streams, durationMs: _durationMs } = a);
+//         else { _sid = a; _streams = b; _durationMs = c; }
+//         if (_streams != null) this.streams = _streams;
+//         if (_durationMs != null) this.duration = _durationMs;
+//         if (_sid != null) this.metadata = { ...(this.metadata || {}), sid: _sid };
+//         return this.start();
+//       };
+//     }
+
+//     client.metadata = { sid, trigger: 'manual', ua: navigator.userAgent };
+//     await client.runThroughputTest({ streams, durationMs });
+
+//     // 🔁 Fallback if SDK never flagged final=true
+//     if (!sawFinalDL && lastDL) {
+//       const r = lastDL; const mbps = (r.goodput_bps || 0) / 1e6;
+//       log(`↓ ${mbps.toFixed(2)} Mbps (fallback)`);
+//       resultDisplay.textContent += `Download (fallback final):\n${JSON.stringify(r, null, 2)}\n\n`;
+//       sendResult('download', r, { sid, session_id: currentSession?.id, streams, durationMs });
+//       markFinal('download');
+//     }
+//     if (!sawFinalUL && lastUL) {
+//       const r = lastUL; const mbps = (r.goodput_bps || 0) / 1e6;
+//       log(`↑ ${mbps.toFixed(2)} Mbps (fallback)`);
+//       resultDisplay.textContent += `Upload (fallback final):\n${JSON.stringify(r, null, 2)}\n\n`;
+//       sendResult('upload', r, { sid, session_id: currentSession?.id, streams, durationMs });
+//       markFinal('upload');
+//     }
+
+//     updateStatus('complete');
+//   } catch (e) {
+//     log('runManualTest error:', e?.message || e);
+//     updateStatus('error');
+//   }
+// }
 
 
 // async function runManualTest() {
@@ -752,6 +848,7 @@ async function oneHourRunThenCsv() {
     currentSession = null;
   }
 }
+
 
 
 async function sendResult(direction, r, { sid, session_id, streams, durationMs }) {
