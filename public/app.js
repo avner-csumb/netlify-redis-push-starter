@@ -631,19 +631,20 @@ async function oneHourRunThenCsv() {
     if (!flat.endpoint || !flat.p256dh || !flat.auth) {
       log('Client mapping error: missing endpoint/p256dh/auth', JSON.stringify(flat));
     }
+
+
     const r = await fetch('/.netlify/functions/store-subscription', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(flat)
+      body: JSON.stringify({ ...toServerSubscription(browserSub), ua: navigator.userAgent, ttlHours: 1 })
     });
+
     if (!r.ok) {
-      const text = await r.text().catch(()=>'');
+      const text = await r.text().catch(()=> '');
       log('store-subscription 400 body:', text);
       throw new Error(`store-subscription failed (${r.status})`);
     }
 
-
-    if (!r.ok) throw new Error(`store-subscription failed (${r.status})`);
     const data = await r.json();
     if (!data?.ok) throw new Error('store-subscription returned not ok');
 
@@ -671,46 +672,34 @@ async function oneHourRunThenCsv() {
 }
 
 
-// async function sendResult(direction, r, { sid, session_id }) {
-//   const body = {
-//     direction,
-//     sid,
-//     sub_id: sid,                  // ok to send both; backend uses either
-//     session_id,                   // <-- new
-//     goodput_bps: r.goodput_bps,
-//     streams,
-//     duration_ms: durationMs,
-//     result_json: r
-//   };
-//   await fetch('/.netlify/functions/save-result', {
-//     method: 'POST',
-//     headers: { 'content-type': 'application/json' },
-//     body: JSON.stringify(body)
-//   });
-// }
-
-
 async function sendResult(direction, r, { sid, session_id, streams, durationMs }) {
+  const numericSid = typeof sid === 'number' || /^\d+$/.test(String(sid))
+    ? Number(sid) : undefined;
+
   const body = {
     direction,
-    sid,
-    sub_id: sid,
     session_id,
     goodput_bps: r.goodput_bps,
     streams,
     duration_ms: durationMs,
     result_json: r
   };
-  await fetch('/.netlify/functions/save-result', {
+  if (numericSid !== undefined) body.sub_id = numericSid;
+
+  const res = await fetch('/.netlify/functions/save-result', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body)
   });
+  if (!res.ok) {
+    const t = await res.text().catch(()=> '');
+    log('save-result failed', res.status, t);
+  }
 }
 
 
-// subscribeBtn?.addEventListener('click', () => subscribe());
-// unsubscribeBtn?.addEventListener('click', unsubscribe);
+subscribeBtn?.addEventListener('click', () => subscribe());
+unsubscribeBtn?.addEventListener('click', unsubscribe);
 
 // subscribeBtn && (subscribeBtn.hidden = subscribed);
 // unsubscribeBtn && (unsubscribeBtn.hidden = !subscribed);
