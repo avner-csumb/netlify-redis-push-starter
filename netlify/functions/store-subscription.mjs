@@ -6,32 +6,39 @@ export async function handler(event) {
     return { statusCode: 405, body: 'Only POST' };
   }
 
-  let payload;
+  let body;
   try {
-    payload = JSON.parse(event.body || '{}');
+    body = JSON.parse(event.body || '{}');
   } catch {
-    return { statusCode: 400, body: 'Invalid JSON' };
+    return json(400, { ok: false, error: 'Invalid JSON' });
   }
 
-  const endpoint   = payload.endpoint;
-  const p256dh     = payload.keys?.p256dh;
-  const auth       = payload.keys?.auth;
-  const expiresRaw = payload.expirationTime ? new Date(payload.expirationTime) : null;
-  const ttlHours   = Number(payload.ttlHours ?? 0);
-  const ua         = event.headers['user-agent'] || null;
+  // Accept BOTH shapes:
+  // - flat:   { endpoint, p256dh, auth, expiration_time }
+  // - nested: { endpoint, keys:{p256dh,auth}, expirationTime }
+  const endpoint        = body.endpoint;
+  const p256dh          = body.p256dh ?? body.keys?.p256dh;
+  const auth            = body.auth    ?? body.keys?.auth;
+  const expiration_time = body.expiration_time ?? body.expirationTime ?? null;
+  const ttlHours        = Number.isFinite(Number(body.ttlHours)) ? Number(body.ttlHours) : 0;
+
+  // Prefer client-provided UA if present; fall back to request header
+  const ua = body.ua ?? event.headers?.['user-agent'] ?? null;
 
   if (!endpoint || !p256dh || !auth) {
-    return { statusCode: 400, body: 'Missing subscription fields' };
+    return json(400, { ok: false, error: 'Invalid subscription: endpoint/p256dh/auth required' });
   }
+
+  const expiresRaw = expiration_time ? new Date(expiration_time) : null;
 
   // Compute app-level expiry (NULL = persistent)
   const appExpiresAt = ttlHours > 0
-    ? new Date(Date.now() + ttlHours * 3600 * 1000)
+    ? new Date(Date.now() + ttlHours * 3600_000) // 1h = 3600_000 ms
     : null;
 
   const sql = neon(process.env.DATABASE_URL);
   try {
-    await sql`
+    const rows = await sql`
       INSERT INTO push_subscriptions (endpoint, p256dh, auth, expiration_time, ua, app_expires_at)
       VALUES (${endpoint}, ${p256dh}, ${auth}, ${expiresRaw}, ${ua}, ${appExpiresAt})
       ON CONFLICT (endpoint) DO UPDATE
@@ -41,21 +48,20 @@ export async function handler(event) {
           ua     = EXCLUDED.ua,
           app_expires_at = EXCLUDED.app_expires_at,
           updated_at = now()
+      RETURNING id, app_expires_at;
     `;
-    
-    
-    // return { statusCode: 200, body: JSON.stringify({ ok: true, app_expires_at: appExpiresAt }) };
-    return {
-      statusCode: 200,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ok: true, id: rows[0].id, app_expires_at: rows[0].app_expires_at })
-    };
 
-
-
+    return json(200, { ok: true, id: rows[0].id, app_expires_at: rows[0].app_expires_at });
   } catch (e) {
-    console.error(e);
-    return { statusCode: 500, body: 'DB error' };
+    console.error('store-subscription error', e);
+    return json(500, { ok: false, error: 'DB error' });
   }
 }
 
+function json(statusCode, obj) {
+  return {
+    statusCode,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(obj)
+  };
+}

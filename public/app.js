@@ -199,7 +199,13 @@ async function subscribe(opts = {}) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       // body: JSON.stringify({ ...sub.toJSON(), ttlHours: opts.ttlHours ?? null })
-      body: JSON.stringify({ ...toServerSubscription(sub), ttlHours: opts.ttlHours ?? null, ua: navigator.userAgent })
+      // body: JSON.stringify({ ...toServerSubscription(sub), ttlHours: opts.ttlHours ?? null, ua: navigator.userAgent })
+
+      body: JSON.stringify({
+         ...toServerSubscription(sub),
+         ttlHours: opts.ttlHours ?? null,
+         ua: navigator.userAgent
+       })
 
     });
 
@@ -309,14 +315,18 @@ async function runManualTest() {
 
       onDownloadResult: r => {
         if (r?.final) {
-          sendResult('download', r, { sid, session_id: currentSession?.id });
-          markFinal('download'); // <-- increment after download final
+          finalDownload = r;
+          const streams = 4, durationMs = 3600;
+          sendResult('download', r, { sid, session_id: currentSession?.id, streams, durationMs });
+          markFinal('download');
         }
       },
       onUploadResult: r => {
         if (r?.final) {
-          sendResult('upload', r, { sid, session_id: currentSession?.id });
-          markFinal('upload'); // <-- increment after upload final
+          finalUpload = r;
+          const streams = 4, durationMs = 3600;
+          sendResult('upload', r, { sid, session_id: currentSession?.id, streams, durationMs });
+          markFinal('upload');
         }
       },
       onError:          (e) => log('MSAK error:', e.stack || e.message || e)
@@ -339,30 +349,19 @@ async function runManualTest() {
 
     await client.runThroughputTest({ sid, streams: 4, durationMs: 3600 });
 
-    // if (finalDownload) {
-    //   log(`↓ ${finalDownload.goodput.toFixed(2)} Mbps`);
-    //   resultDisplay.textContent += `Download:\n${JSON.stringify(finalDownload, null, 2)}\n\n`;
-    //   await sendResult('download', finalDownload, { sid });
-    // }
-
-    // if (finalUpload) {
-    //   log(`↑ ${finalUpload.goodput.toFixed(2)} Mbps`);
-    //   resultDisplay.textContent += `Upload:\n${JSON.stringify(finalUpload, null, 2)}\n\n`;
-    //   await sendResult('upload', finalUpload, { sid });
-    // }
-
     if (finalDownload) {
-      const mbps = (finalDownload.goodput_bps || 0) / 1e6;
-      log(`↓ ${mbps.toFixed(2)} Mbps`);
+      const mbpsDown = (finalDownload.goodput_bps || 0) / 1e6;
+      log(`↓ ${mbpsDown.toFixed(2)} Mbps`);
       resultDisplay.textContent += `Download:\n${JSON.stringify(finalDownload, null, 2)}\n\n`;
+      await sendResult('download', finalDownload, { sid, streams: 4, durationMs: 3600 });
     }
 
     if (finalUpload) {
-      const mbps = (finalUpload.goodput_bps || 0) / 1e6;
-      log(`↑ ${mbps.toFixed(2)} Mbps`);
+      const mbpsUp = (finalUpload.goodput_bps || 0) / 1e6;
+      log(`↑ ${mbpsUp.toFixed(2)} Mbps`);
       resultDisplay.textContent += `Upload:\n${JSON.stringify(finalUpload, null, 2)}\n\n`;
+      await sendResult('upload', finalUpload, { sid, streams: 4, durationMs: 3600 });
     }
-
     updateStatus('complete');
   } catch (err) {
     log(`Error: ${err.message}`);
@@ -401,23 +400,21 @@ async function oneHourRunThenCsv() {
     // Ensure browser-side PushSubscription (no TTL here)
     const browserSub = await ensureSubscription();
 
-    // Register/renew on server with 1-hour app expiry
+    const flat = { ...toServerSubscription(browserSub), ua: navigator.userAgent, ttlHours: 1 };
+    if (!flat.endpoint || !flat.p256dh || !flat.auth) {
+      log('Client mapping error: missing endpoint/p256dh/auth', JSON.stringify(flat));
+    }
     const r = await fetch('/.netlify/functions/store-subscription', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      // body: JSON.stringify({
-      //   ...toServerSubscription(browserSub),
-      //   ua: navigator.userAgent,
-      //   ttlHours: 1
-      // })
-      // body: JSON.stringify({ ...toServerSubscription(sub), ttlHours: opts.ttlHours ?? null })
-      body: JSON.stringify({
-        ...toServerSubscription(browserSub),
-        ua: navigator.userAgent,
-        ttlHours: 1
-      })
-
+      body: JSON.stringify(flat)
     });
+    if (!r.ok) {
+      const text = await r.text().catch(()=>'');
+      log('store-subscription 400 body:', text);
+      throw new Error(`store-subscription failed (${r.status})`);
+    }
+
 
     if (!r.ok) throw new Error(`store-subscription failed (${r.status})`);
     const data = await r.json();
@@ -485,8 +482,13 @@ async function sendResult(direction, r, { sid, session_id, streams, durationMs }
 }
 
 
-subscribeBtn?.addEventListener('click', () => subscribe());
-unsubscribeBtn?.addEventListener('click', unsubscribe);
+// subscribeBtn?.addEventListener('click', () => subscribe());
+// unsubscribeBtn?.addEventListener('click', unsubscribe);
+
+subscribeBtn && (subscribeBtn.hidden = subscribed);
+unsubscribeBtn && (unsubscribeBtn.hidden = !subscribed);
+
+
 runBtn?.addEventListener('click', runManualTest);
 // subscribeOnceBtn?.addEventListener('click', subscribeFor1HourThenUnsubscribe);
 
