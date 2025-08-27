@@ -441,89 +441,171 @@ async function runManualTest() {
   resultDisplay.textContent = '';
   log('Starting MSAK test');
 
-  // test args used for logging + save-result
   const sid = `manual-${Date.now()}`;
   const streams = 4;
-  const durationMs = 3600; // ≈3.6s test; change if you want longer
+  const durationMs = 5000;
+
+  let lastDL = null, lastUL = null;
+  let sawFinalDL = false, sawFinalUL = false;
+  let printedKeys = false;
 
   try {
     const client = new msak.Client('web-client', '0.3.1', {
-
       onDownloadResult: r => {
-        if (r?.final) {
+        lastDL = r;
+        if (!printedKeys && r) { printedKeys = true; log('Download keys:', Object.keys(r).join(','), 'final=', String(r.final)); }
+        if (r?.final === true) {
+          sawFinalDL = true;
           const mbps = (r.goodput_bps || 0) / 1e6;
           log(`↓ ${mbps.toFixed(2)} Mbps`);
           resultDisplay.textContent += `Download (final):\n${JSON.stringify(r, null, 2)}\n\n`;
-
-          sendResult('download', r, { sid, session_id: currentSession?.id, streams, durationMs });
+          sendResult('download', r, { sid, session_id: currentSession?.id, streams, durationMs }); // logs ok/failed
           markFinal('download');
         }
       },
       onUploadResult: r => {
-        if (r?.final) {
+        lastUL = r;
+        if (!printedKeys && r) { printedKeys = true; log('Upload keys:', Object.keys(r).join(','), 'final=', String(r.final)); }
+        if (r?.final === true) {
+          sawFinalUL = true;
           const mbps = (r.goodput_bps || 0) / 1e6;
           log(`↑ ${mbps.toFixed(2)} Mbps`);
           resultDisplay.textContent += `Upload (final):\n${JSON.stringify(r, null, 2)}\n\n`;
-
           sendResult('upload', r, { sid, session_id: currentSession?.id, streams, durationMs });
           markFinal('upload');
         }
       },
-      // onDownloadResult: r => {
-      //   log('[DL] cb final=', String(!!r?.final));
-      //   if (r?.final) {
-      //     // show immediately
-      //     const mbps = (r.goodput_bps || 0) / 1e6;
-      //     log(`↓ ${mbps.toFixed(2)} Mbps`);
-      //     resultDisplay.textContent += `Download (final):\n${JSON.stringify(r, null, 2)}\n\n`;
-
-      //     // persist
-      //     sendResult('download', r, { sid, session_id: currentSession?.id, streams, durationMs });
-      //     markFinal('download');
-      //   }
-      // },
-      // onUploadResult: r => {
-      //   log('[UL] cb final=', String(!!r?.final));
-      //   if (r?.final) {
-      //     // show immediately
-      //     const mbps = (r.goodput_bps || 0) / 1e6;
-      //     log(`↑ ${mbps.toFixed(2)} Mbps`);
-      //     resultDisplay.textContent += `Upload (final):\n${JSON.stringify(r, null, 2)}\n\n`;
-
-      //     // persist
-      //     sendResult('upload', r, { sid, session_id: currentSession?.id, streams, durationMs });
-      //     markFinal('upload');
-      //   }
-      // },
-      onError: e => log('MSAK error:', e && (e.stack || e.message) || e)
+      onError: e => log('MSAK error:', e?.stack || e?.message || e)
     });
 
-    // optional metadata
-    client.metadata = { sid, trigger: 'manual', ua: navigator.userAgent };
-
-    // ✅ Add shim for v0.3.1 if needed
+    // 0.3.1 shim
     if (!client.runThroughputTest) {
       client.runThroughputTest = function (a, b, c) {
-        let sid, streams, durationMs;
-        if (a && typeof a === 'object') ({ sid, streams, durationMs } = a);
-        else { sid = a; streams = b; durationMs = c; }
-        if (streams) this.streams = streams;
-        if (durationMs) this.duration = durationMs;
-        if (sid) this.metadata = { ...(this.metadata || {}), sid };
+        let _sid, _streams, _durationMs;
+        if (a && typeof a === 'object') ({ sid: _sid, streams: _streams, durationMs: _durationMs } = a);
+        else { _sid = a; _streams = b; _durationMs = c; }
+        if (_streams != null) this.streams = _streams;
+        if (_durationMs != null) this.duration = _durationMs;
+        if (_sid != null) this.metadata = { ...(this.metadata || {}), sid: _sid };
         return this.start();
       };
     }
 
-
-    // run
+    client.metadata = { sid, trigger: 'manual', ua: navigator.userAgent };
     await client.runThroughputTest({ streams, durationMs });
 
+    // 🔁 Fallback if SDK never flagged final=true
+    if (!sawFinalDL && lastDL) {
+      const r = lastDL; const mbps = (r.goodput_bps || 0) / 1e6;
+      log(`↓ ${mbps.toFixed(2)} Mbps (fallback)`);
+      resultDisplay.textContent += `Download (fallback final):\n${JSON.stringify(r, null, 2)}\n\n`;
+      sendResult('download', r, { sid, session_id: currentSession?.id, streams, durationMs });
+      markFinal('download');
+    }
+    if (!sawFinalUL && lastUL) {
+      const r = lastUL; const mbps = (r.goodput_bps || 0) / 1e6;
+      log(`↑ ${mbps.toFixed(2)} Mbps (fallback)`);
+      resultDisplay.textContent += `Upload (fallback final):\n${JSON.stringify(r, null, 2)}\n\n`;
+      sendResult('upload', r, { sid, session_id: currentSession?.id, streams, durationMs });
+      markFinal('upload');
+    }
+
     updateStatus('complete');
-  } catch (err) {
-    log('runManualTest error:', err && err.message || err);
+  } catch (e) {
+    log('runManualTest error:', e?.message || e);
     updateStatus('error');
   }
 }
+
+
+// async function runManualTest() {
+//   updateStatus('running...');
+//   resultDisplay.textContent = '';
+//   log('Starting MSAK test');
+
+//   // test args used for logging + save-result
+//   const sid = `manual-${Date.now()}`;
+//   const streams = 4;
+//   const durationMs = 3600; // ≈3.6s test; change if you want longer
+
+//   try {
+//     const client = new msak.Client('web-client', '0.3.1', {
+
+//       onDownloadResult: r => {
+//         if (r?.final) {
+//           const mbps = (r.goodput_bps || 0) / 1e6;
+//           log(`↓ ${mbps.toFixed(2)} Mbps`);
+//           resultDisplay.textContent += `Download (final):\n${JSON.stringify(r, null, 2)}\n\n`;
+
+//           sendResult('download', r, { sid, session_id: currentSession?.id, streams, durationMs });
+//           markFinal('download');
+//         }
+//       },
+//       onUploadResult: r => {
+//         if (r?.final) {
+//           const mbps = (r.goodput_bps || 0) / 1e6;
+//           log(`↑ ${mbps.toFixed(2)} Mbps`);
+//           resultDisplay.textContent += `Upload (final):\n${JSON.stringify(r, null, 2)}\n\n`;
+
+//           sendResult('upload', r, { sid, session_id: currentSession?.id, streams, durationMs });
+//           markFinal('upload');
+//         }
+//       },
+//       // onDownloadResult: r => {
+//       //   log('[DL] cb final=', String(!!r?.final));
+//       //   if (r?.final) {
+//       //     // show immediately
+//       //     const mbps = (r.goodput_bps || 0) / 1e6;
+//       //     log(`↓ ${mbps.toFixed(2)} Mbps`);
+//       //     resultDisplay.textContent += `Download (final):\n${JSON.stringify(r, null, 2)}\n\n`;
+
+//       //     // persist
+//       //     sendResult('download', r, { sid, session_id: currentSession?.id, streams, durationMs });
+//       //     markFinal('download');
+//       //   }
+//       // },
+//       // onUploadResult: r => {
+//       //   log('[UL] cb final=', String(!!r?.final));
+//       //   if (r?.final) {
+//       //     // show immediately
+//       //     const mbps = (r.goodput_bps || 0) / 1e6;
+//       //     log(`↑ ${mbps.toFixed(2)} Mbps`);
+//       //     resultDisplay.textContent += `Upload (final):\n${JSON.stringify(r, null, 2)}\n\n`;
+
+//       //     // persist
+//       //     sendResult('upload', r, { sid, session_id: currentSession?.id, streams, durationMs });
+//       //     markFinal('upload');
+//       //   }
+//       // },
+//       onError: e => log('MSAK error:', e && (e.stack || e.message) || e)
+//     });
+
+//     // optional metadata
+//     client.metadata = { sid, trigger: 'manual', ua: navigator.userAgent };
+
+//     // ✅ Add shim for v0.3.1 if needed
+//     if (!client.runThroughputTest) {
+//       client.runThroughputTest = function (a, b, c) {
+//         let sid, streams, durationMs;
+//         if (a && typeof a === 'object') ({ sid, streams, durationMs } = a);
+//         else { sid = a; streams = b; durationMs = c; }
+//         if (streams) this.streams = streams;
+//         if (durationMs) this.duration = durationMs;
+//         if (sid) this.metadata = { ...(this.metadata || {}), sid };
+//         return this.start();
+//       };
+//     }
+
+
+//     // run
+//     await client.runThroughputTest({ streams, durationMs });
+
+//     updateStatus('complete');
+//   } catch (err) {
+//     log('runManualTest error:', err && err.message || err);
+//     updateStatus('error');
+//   }
+// }
 
 
 // async function runManualTest() {
@@ -677,23 +759,30 @@ async function sendResult(direction, r, { sid, session_id, streams, durationMs }
     ? Number(sid) : undefined;
 
   const body = {
-    direction,
-    session_id,
-    goodput_bps: r.goodput_bps,
-    streams,
-    duration_ms: durationMs,
-    result_json: r
+    direction,                          // 'download' | 'upload'
+    session_id: session_id ?? null,     // keep null if unknown
+    goodput_bps: r?.goodput_bps ?? null,
+    streams: streams ?? null,
+    duration_ms: durationMs ?? null,
+    result_json: r ?? null
   };
   if (numericSid !== undefined) body.sub_id = numericSid;
 
-  const res = await fetch('/.netlify/functions/save-result', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body)
-  });
-  if (!res.ok) {
-    const t = await res.text().catch(()=> '');
-    log('save-result failed', res.status, t);
+  try {
+    const res = await fetch('/.netlify/functions/save-result', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+
+    const text = await res.text().catch(() => '');
+    if (!res.ok) {
+      log('save-result failed', res.status, text);
+    } else {
+      log('save-result ok', text);      // <-- will include { ok:true, id,... } if your function RETURNINGs
+    }
+  } catch (e) {
+    log('save-result fetch error', e?.message || e);
   }
 }
 
