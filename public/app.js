@@ -225,23 +225,66 @@ async function unsubscribe() {
     const reg = await navigator.serviceWorker.getRegistration();
     const sub = await reg?.pushManager.getSubscription();
     const endpoint = sub?.endpoint || localStorage.getItem('lastEndpoint');
-    if (sub) await sub.unsubscribe();
-    log('Unsubscribed from push in browser.');
+    log('Unsubscribe: current endpoint =', endpoint || '(none)');
 
+    // Browser-side unsubscribe
+    if (sub) {
+      const ok = await sub.unsubscribe();
+      log('Browser unsubscribed =', String(ok));
+    } else {
+      log('No PushSubscription found in browser');
+    }
+
+    // Server-side delete
     const res = await fetch('/.netlify/functions/remove-subscription', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ endpoint })
     });
+    const text = await res.text();
+    log('Server remove status =', res.status, 'body =', text);
 
-    if (!res.ok) throw new Error(`Backend remove failed (${res.status}): ${await res.text()}`);
-    log('Removed from Neon:', await res.text());
+    // Trust-but-verify against DB
+    const check = await fetch('/.netlify/functions/check-subscription', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ endpoint })
+    });
+    const cjson = await check.json().catch(()=> ({}));
+    log('Server check after remove =', JSON.stringify(cjson));
+
   } catch (e) {
-    log('Unsubscribe error:', e.message);
+    log('Unsubscribe error:', e.message || e);
   } finally {
-    refreshSubStatus();
+    await refreshSubStatus();       // updates the UI state
+    await updateDebugLocal?.();     // optional (your debug panel)
+    await updateDebugServer?.();    // optional (your debug panel)
   }
 }
+
+
+// async function unsubscribe() {
+//   try {
+//     const reg = await navigator.serviceWorker.getRegistration();
+//     const sub = await reg?.pushManager.getSubscription();
+//     const endpoint = sub?.endpoint || localStorage.getItem('lastEndpoint');
+//     if (sub) await sub.unsubscribe();
+//     log('Unsubscribed from push in browser.');
+
+//     const res = await fetch('/.netlify/functions/remove-subscription', {
+//       method: 'POST',
+//       headers: { 'Content-Type': 'application/json' },
+//       body: JSON.stringify({ endpoint })
+//     });
+
+//     if (!res.ok) throw new Error(`Backend remove failed (${res.status}): ${await res.text()}`);
+//     log('Removed from Neon:', await res.text());
+//   } catch (e) {
+//     log('Unsubscribe error:', e.message);
+//   } finally {
+//     refreshSubStatus();
+//   }
+// }
 
 async function exportCurrentSessionCsv() {
   if (!currentSession?.id) return;
@@ -268,37 +311,107 @@ async function exportCurrentSessionCsv() {
 async function runMsak({ sid, streams = 2, durationMs = 5000 } = {}) {
   try {
     const client = new msak.Client('web-client', '0.3.1', {
-
       onDownloadResult: r => {
         if (r?.final) {
-          finalDownload = r;
-          const streams = 4, durationMs = 3600; // your test args below
-          sendResult('download', r, { sid, session_id: currentSession?.id, streams, durationMs });
+          const mbps = (r.goodput_bps || 0) / 1e6;
+          log(`↓ ${mbps.toFixed(2)} Mbps`);
+          sendResult('download', r, {
+            sid,
+            session_id: currentSession?.id,
+            streams,
+            durationMs
+          });
           markFinal('download');
         }
       },
       onUploadResult: r => {
         if (r?.final) {
-          finalUpload = r;
-          const streams = 4, durationMs = 3600;
-          sendResult('upload', r, { sid, session_id: currentSession?.id, streams, durationMs });
+          const mbps = (r.goodput_bps || 0) / 1e6;
+          log(`↑ ${mbps.toFixed(2)} Mbps`);
+          sendResult('upload', r, {
+            sid,
+            session_id: currentSession?.id,
+            streams,
+            durationMs
+          });
           markFinal('upload');
         }
       },
-
-      onError: e => log('MSAK error:', e.stack || e.message || e)
+      onError: e => log('MSAK error:', e?.stack || e?.message || e)
     });
 
-    // shim for 0.3.1
+    // tag the session/payload for server-side tracing
+    client.metadata = { sid, trigger: 'push', ua: navigator.userAgent };
+
+    // v0.3.1 shim — map args to instance fields before start()
     if (!client.runThroughputTest) {
-      client.runThroughputTest = (args) => client.start(args);
+      client.runThroughputTest = function (a, b, c) {
+        let _sid, _streams, _durationMs;
+        if (a && typeof a === 'object') ({ sid: _sid, streams: _streams, durationMs: _durationMs } = a);
+        else { _sid = a; _streams = b; _durationMs = c; }
+
+        if (_streams != null) this.streams = _streams;
+        if (_durationMs != null) this.duration = _durationMs;
+        if (_sid != null) this.metadata = { ...(this.metadata || {}), sid: _sid };
+
+        return this.start();
+      };
     }
 
     await client.runThroughputTest({ streams, durationMs });
   } catch (e) {
-    log('runMsak error:', e.message || e);
+    log('runMsak error:', e?.message || e);
   }
 }
+
+
+// async function runMsak({ sid, streams = 2, durationMs = 5000 } = {}) {
+//   try {
+//     const client = new msak.Client('web-client', '0.3.1', {
+
+//       onDownloadResult: r => {
+//         if (r?.final) {
+//           finalDownload = r;
+//           const streams = 4, durationMs = 3600; // your test args below
+//           sendResult('download', r, { sid, session_id: currentSession?.id, streams, durationMs });
+//           markFinal('download');
+//         }
+//       },
+//       onUploadResult: r => {
+//         if (r?.final) {
+//           finalUpload = r;
+//           const streams = 4, durationMs = 3600;
+//           sendResult('upload', r, { sid, session_id: currentSession?.id, streams, durationMs });
+//           markFinal('upload');
+//         }
+//       },
+
+//       onError: e => log('MSAK error:', e.stack || e.message || e)
+//     });
+
+//     // shim for 0.3.1
+//     // if (!client.runThroughputTest) {
+//     //   client.runThroughputTest = (args) => client.start(args);
+//     // }
+
+//     if (!client.runThroughputTest) {
+//       client.runThroughputTest = function (a, b, c) {
+//         let sid, streams, durationMs;
+//         if (a && typeof a === 'object') ({ sid, streams, durationMs } = a);
+//         else { sid = a; streams = b; durationMs = c; }
+//         if (streams) this.streams = streams;
+//         if (durationMs) this.duration = durationMs;
+//         if (sid) this.metadata = { ...(this.metadata || {}), sid };
+//         return this.start();
+//       };
+//     }
+
+
+//     await client.runThroughputTest({ streams, durationMs });
+//   } catch (e) {
+//     log('runMsak error:', e.message || e);
+//   }
+// }
 
 
 async function runManualTest() {
@@ -342,11 +455,22 @@ async function runManualTest() {
       onError: e => log('MSAK error:', e && (e.stack || e.message) || e)
     });
 
-    // v0.3.1 shim
-    if (!client.runThroughputTest) client.runThroughputTest = (args) => client.start(args);
-
     // optional metadata
     client.metadata = { sid, trigger: 'manual', ua: navigator.userAgent };
+
+    // ✅ Add shim for v0.3.1 if needed
+    if (!client.runThroughputTest) {
+      client.runThroughputTest = function (a, b, c) {
+        let sid, streams, durationMs;
+        if (a && typeof a === 'object') ({ sid, streams, durationMs } = a);
+        else { sid = a; streams = b; durationMs = c; }
+        if (streams) this.streams = streams;
+        if (durationMs) this.duration = durationMs;
+        if (sid) this.metadata = { ...(this.metadata || {}), sid };
+        return this.start();
+      };
+    }
+
 
     // run
     await client.runThroughputTest({ streams, durationMs });
@@ -394,18 +518,18 @@ async function runManualTest() {
 
 //     client.metadata = { sid, trigger: 'manual', ua: navigator.userAgent };
 
-//     // ✅ Add shim for v0.3.1 if needed
-//     if (!client.runThroughputTest) {
-//       client.runThroughputTest = function (a, b, c) {
-//         let sid, streams, durationMs;
-//         if (a && typeof a === 'object') ({ sid, streams, durationMs } = a);
-//         else { sid = a; streams = b; durationMs = c; }
-//         if (streams) this.streams = streams;
-//         if (durationMs) this.duration = durationMs;
-//         if (sid) this.metadata = { ...(this.metadata || {}), sid };
-//         return this.start();
-//       };
-//     }
+    // // ✅ Add shim for v0.3.1 if needed
+    // if (!client.runThroughputTest) {
+    //   client.runThroughputTest = function (a, b, c) {
+    //     let sid, streams, durationMs;
+    //     if (a && typeof a === 'object') ({ sid, streams, durationMs } = a);
+    //     else { sid = a; streams = b; durationMs = c; }
+    //     if (streams) this.streams = streams;
+    //     if (durationMs) this.duration = durationMs;
+    //     if (sid) this.metadata = { ...(this.metadata || {}), sid };
+    //     return this.start();
+    //   };
+    // }
 
 //     await client.runThroughputTest({ sid, streams: 4, durationMs: 3600 });
 
