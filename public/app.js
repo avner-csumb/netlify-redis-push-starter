@@ -24,6 +24,10 @@ function markFinal(direction) {
 }
 
 
+// guard so a given push SID can’t run twice in parallel
+const activePushRuns = new Set();
+
+
 const dbg = {
   local: document.getElementById('dbg-active-local'),
   server: document.getElementById('dbg-active-server'),
@@ -331,60 +335,51 @@ async function exportCurrentSessionCsv() {
 
 
 async function runMsak({ sid, streams = 2, durationMs = 5000 } = {}) {
+  // avoid duplicate runs for the same push SID (e.g., double SW posts)
+  if (sid && activePushRuns.has(sid)) {
+    log('runMsak: already running for sid', sid);
+    return;
+  }
+  if (sid) activePushRuns.add(sid);
+
+  let lastDL = null, lastUL = null;
+  let sawFinalDL = false, sawFinalUL = false;
+  let didSaveDL  = false, didSaveUL  = false;
+
   try {
     const client = new msak.Client('web-client', '0.3.1', {
-
-      // onDownloadResult: r => {
-      //   if (r?.final) {
-      //     const mbps = (r.goodput_bps || 0) / 1e6;
-      //     log(`↓ ${mbps.toFixed(2)} Mbps`);
-      //     sendResult('download', r, {
-      //       sid,
-      //       session_id: currentSession?.id,
-      //       streams,
-      //       durationMs
-      //     });
-      //     markFinal('download');
-      //   }
-      // },
-      // onUploadResult: r => {
-      //   if (r?.final) {
-      //     const mbps = (r.goodput_bps || 0) / 1e6;
-      //     log(`↑ ${mbps.toFixed(2)} Mbps`);
-      //     sendResult('upload', r, {
-      //       sid,
-      //       session_id: currentSession?.id,
-      //       streams,
-      //       durationMs
-      //     });
-      //     markFinal('upload');
-      //   }
-      // },
-
       onDownloadResult: r => {
-      if (r?.final) {
-        const mbps = (r.goodput_bps || 0) / 1e6;
-        log(`↓ ${mbps.toFixed(2)} Mbps`);
-        resultDisplay.textContent += `Download (final):\n${JSON.stringify(r, null, 2)}\n\n`;
-
-        sendResult('download', r, { sid, session_id: currentSession?.id, streams, durationMs });
-        markFinal('download');
-      }
-    },
-    onUploadResult: r => {
-      if (r?.final) {
-        const mbps = (r.goodput_bps || 0) / 1e6;
-        log(`↑ ${mbps.toFixed(2)} Mbps`);
-        resultDisplay.textContent += `Upload (final):\n${JSON.stringify(r, null, 2)}\n\n`;
-
-        sendResult('upload', r, { sid, session_id: currentSession?.id, streams, durationMs });
-        markFinal('upload');
-      }
-    },
+        lastDL = r;
+        if (r?.final === true && !didSaveDL) {
+          sawFinalDL = true;
+          const bps  = extractGoodputBps(r);
+          const mbps = (bps || 0) / 1e6;
+          log(`↓ ${mbps.toFixed(2)} Mbps`);
+          didSaveDL = true;
+          sendResult('download', r, {
+            sid, session_id: currentSession?.id, streams, durationMs, goodput_bps_override: bps
+          });
+          markFinal('download');
+        }
+      },
+      onUploadResult: r => {
+        lastUL = r;
+        if (r?.final === true && !didSaveUL) {
+          sawFinalUL = true;
+          const bps  = extractGoodputBps(r);
+          const mbps = (bps || 0) / 1e6;
+          log(`↑ ${mbps.toFixed(2)} Mbps`);
+          didSaveUL = true;
+          sendResult('upload', r, {
+            sid, session_id: currentSession?.id, streams, durationMs, goodput_bps_override: bps
+          });
+          markFinal('upload');
+        }
+      },
       onError: e => log('MSAK error:', e?.stack || e?.message || e)
     });
 
-    // tag the session/payload for server-side tracing
+    // tag for traceability
     client.metadata = { sid, trigger: 'push', ua: navigator.userAgent };
 
     // v0.3.1 shim — map args to instance fields before start()
@@ -393,20 +388,121 @@ async function runMsak({ sid, streams = 2, durationMs = 5000 } = {}) {
         let _sid, _streams, _durationMs;
         if (a && typeof a === 'object') ({ sid: _sid, streams: _streams, durationMs: _durationMs } = a);
         else { _sid = a; _streams = b; _durationMs = c; }
-
         if (_streams != null) this.streams = _streams;
         if (_durationMs != null) this.duration = _durationMs;
         if (_sid != null) this.metadata = { ...(this.metadata || {}), sid: _sid };
-
         return this.start();
       };
     }
 
     await client.runThroughputTest({ streams, durationMs });
+
+    // Fallbacks (SDK didn’t flag finals). Only save if not already saved.
+    if (!sawFinalDL && lastDL && !didSaveDL) {
+      const bps  = extractGoodputBps(lastDL);
+      const mbps = (bps || 0) / 1e6;
+      log(`↓ ${mbps.toFixed(2)} Mbps (fallback)`);
+      didSaveDL = true;
+      sendResult('download', lastDL, {
+        sid, session_id: currentSession?.id, streams, durationMs, goodput_bps_override: bps
+      });
+      markFinal('download');
+    }
+    if (!sawFinalUL && lastUL && !didSaveUL) {
+      const bps  = extractGoodputBps(lastUL);
+      const mbps = (bps || 0) / 1e6;
+      log(`↑ ${mbps.toFixed(2)} Mbps (fallback)`);
+      didSaveUL = true;
+      sendResult('upload', lastUL, {
+        sid, session_id: currentSession?.id, streams, durationMs, goodput_bps_override: bps
+      });
+      markFinal('upload');
+    }
   } catch (e) {
     log('runMsak error:', e?.message || e);
+  } finally {
+    if (sid) activePushRuns.delete(sid);
   }
 }
+
+
+// async function runMsak({ sid, streams = 2, durationMs = 5000 } = {}) {
+//   try {
+//     const client = new msak.Client('web-client', '0.3.1', {
+
+//       // onDownloadResult: r => {
+//       //   if (r?.final) {
+//       //     const mbps = (r.goodput_bps || 0) / 1e6;
+//       //     log(`↓ ${mbps.toFixed(2)} Mbps`);
+//       //     sendResult('download', r, {
+//       //       sid,
+//       //       session_id: currentSession?.id,
+//       //       streams,
+//       //       durationMs
+//       //     });
+//       //     markFinal('download');
+//       //   }
+//       // },
+//       // onUploadResult: r => {
+//       //   if (r?.final) {
+//       //     const mbps = (r.goodput_bps || 0) / 1e6;
+//       //     log(`↑ ${mbps.toFixed(2)} Mbps`);
+//       //     sendResult('upload', r, {
+//       //       sid,
+//       //       session_id: currentSession?.id,
+//       //       streams,
+//       //       durationMs
+//       //     });
+//       //     markFinal('upload');
+//       //   }
+//       // },
+
+//       onDownloadResult: r => {
+//       if (r?.final) {
+//         const mbps = (r.goodput_bps || 0) / 1e6;
+//         log(`↓ ${mbps.toFixed(2)} Mbps`);
+//         resultDisplay.textContent += `Download (final):\n${JSON.stringify(r, null, 2)}\n\n`;
+
+//         sendResult('download', r, { sid, session_id: currentSession?.id, streams, durationMs });
+//         markFinal('download');
+//       }
+//     },
+//     onUploadResult: r => {
+//       if (r?.final) {
+//         const mbps = (r.goodput_bps || 0) / 1e6;
+//         log(`↑ ${mbps.toFixed(2)} Mbps`);
+//         resultDisplay.textContent += `Upload (final):\n${JSON.stringify(r, null, 2)}\n\n`;
+
+//         sendResult('upload', r, { sid, session_id: currentSession?.id, streams, durationMs });
+//         markFinal('upload');
+//       }
+//     },
+//       onError: e => log('MSAK error:', e?.stack || e?.message || e)
+//     });
+
+//     // tag the session/payload for server-side tracing
+//     client.metadata = { sid, trigger: 'push', ua: navigator.userAgent };
+
+//     // v0.3.1 shim — map args to instance fields before start()
+//     if (!client.runThroughputTest) {
+//       client.runThroughputTest = function (a, b, c) {
+//         let _sid, _streams, _durationMs;
+//         if (a && typeof a === 'object') ({ sid: _sid, streams: _streams, durationMs: _durationMs } = a);
+//         else { _sid = a; _streams = b; _durationMs = c; }
+
+//         if (_streams != null) this.streams = _streams;
+//         if (_durationMs != null) this.duration = _durationMs;
+//         if (_sid != null) this.metadata = { ...(this.metadata || {}), sid: _sid };
+
+//         return this.start();
+//       };
+//     }
+
+//     await client.runThroughputTest({ streams, durationMs });
+//   } catch (e) {
+//     log('runMsak error:', e?.message || e);
+//   }
+// }
 
 
 // async function runMsak({ sid, streams = 2, durationMs = 5000 } = {}) {
