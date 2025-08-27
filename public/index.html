@@ -75,20 +75,6 @@
   <script src="https://unpkg.com/@m-lab/msak@0.3.1/dist/msak.js"></script>
 
 
-  <script>
-  (function () {
-    const _Client = window.msak && window.msak.Client;
-    if (!_Client) return;
-    window.msak.Client = function (...args) {
-      const c = new _Client(...args);
-      if (typeof c.runThroughputTest !== 'function') {
-        c.runThroughputTest = (opts) => c.start(opts);
-      }
-      return c;
-    };
-  })();
-</script>
-
   <script src="/app.js"></script>
 </body>
 </html>

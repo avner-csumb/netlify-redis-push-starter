@@ -504,15 +504,20 @@ document.getElementById('subscribeOnceBtn')?.addEventListener('click', oneHourRu
 //   }
 // });
 
+// navigator.serviceWorker?.addEventListener('message', (evt) => {
+//   if (evt.data?.type === 'RUN_TEST') {
+//     log('Received push-triggered test request');
+//     runMsak(evt.data.payload || {}); // pass payload containing sid/streams/durationMs
+//   }
+// });
+
+
 navigator.serviceWorker?.addEventListener('message', (evt) => {
   if (evt.data?.type === 'RUN_TEST') {
-    log('Received push-triggered test request');
-    runMsak(evt.data.payload || {}); // pass payload containing sid/streams/durationMs
+    log('Push payload:', JSON.stringify(evt.data.payload));
+    runMsak(evt.data.payload || {}); // should be { sid, streams, durationMs }
   }
 });
-
-
-
 
 if (navigator.permissions?.query) {
   try {
