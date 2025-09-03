@@ -8,6 +8,61 @@ let didSaveUL = false;
 
 
 
+// ---- CSV + session helpers ----
+const EXPORT_BASE = '/.netlify/functions/export-results'; // change to '/api/msak/export-results' if rehosted
+
+const SESSION_KEY = 'msakActiveSession';
+function saveSessionState() { try { localStorage.setItem(SESSION_KEY, JSON.stringify(currentSession)); } catch {} }
+function loadSessionState() { try { return JSON.parse(localStorage.getItem(SESSION_KEY) || 'null'); } catch { return null; } }
+function clearSessionState(){ try { localStorage.removeItem(SESSION_KEY); } catch {} }
+
+function downloadCsvForSession(sessionId){
+  const a = document.createElement('a');
+  a.href = `${EXPORT_BASE}?session_id=${encodeURIComponent(sessionId)}`;
+  a.download = `msak_results_${sessionId}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+async function maybeTriggerCsvExport(force=false){
+  const s = currentSession || loadSessionState();
+  if (!s || s.didExport) return;
+  const sid = s.subId;
+  if (!sid) return;
+
+  const expTs = s.expiresAt ? new Date(s.expiresAt).getTime() : 0;
+  const now = Date.now();
+  const graceMs = 90_000;
+
+  if (force || now >= expTs + graceMs) {
+    s.didExport = true;
+    saveSessionState();
+    try { await unsubscribe(); } catch {}
+    downloadCsvForSession(sid);
+    clearSessionState();
+    // Also clear any timers we own
+    if (s.countdownTimerId) clearInterval(s.countdownTimerId);
+    if (s.timerId) clearTimeout(s.timerId);
+  }
+}
+
+function ensureExportWatcher(){
+  clearInterval(ensureExportWatcher._iv);
+  ensureExportWatcher._iv = setInterval(() => maybeTriggerCsvExport(false), 30_000);
+  // window.addEventListener('visibilitychange', () => { if (!document.hidden) maybeTriggerCsvExport(false); });
+  // window.addEventListener('focus', () => maybeTriggerCsvExport(false));
+   if (!ensureExportWatcher._bound) {
+  window.addEventListener('visibilitychange', () => {
+     if (!document.hidden) maybeTriggerCsvExport(false);
+   });
+   window.addEventListener('focus', () => maybeTriggerCsvExport(false));
+   ensureExportWatcher._bound = true;
+ }
+}
+
+
+
 // Track per-test completion (download + upload finals)
 let pendingFinal = { download: false, upload: false };
 
@@ -46,14 +101,6 @@ const subscribeBtn = document.getElementById('subscribeBtn');
 const unsubscribeBtn = document.getElementById('unsubscribeBtn');
 const runBtn = document.getElementById('runTestBtn');
 
-
-
-
-// function extractGoodputBps(r) {
-//   if (r && typeof r.goodput_bps === 'number') return r.goodput_bps;     // newer shapes
-//   if (r && typeof r.goodput === 'number')       return Math.round(r.goodput * 1e6); // v0.3.x: Mbps → bps
-//   return null;
-// }
 
 function extractGoodputBps(r) {
   if (!r) return null;
@@ -110,34 +157,53 @@ async function updateDebugServer() {
     });
     const data = await r.json();
     dbg.server.textContent = data.found && !data.expired ? 'yes' : 'no (expired)';
+
     if (data.id && !currentSession?.subId) {
       currentSession = currentSession || {};
       currentSession.subId = data.id;
       dbg.subId.textContent = String(data.id);
+      saveSessionState();
     }
+
     if (data.app_expires_at && !currentSession?.expiresAt) {
       currentSession = currentSession || {};
       currentSession.expiresAt = data.app_expires_at;
       dbg.expiresAt.textContent = data.app_expires_at;
       startCountdown();
+      ensureExportWatcher();
+      saveSessionState();
     }
   } catch {
     dbg.server.textContent = 'error';
   }
 }
 
-function startCountdown() {
-  clearCountdown();
-  if (!currentSession?.expiresAt) { dbg.countdown.textContent = '—'; return; }
-  function tick() {
-    const ms = new Date(currentSession.expiresAt).getTime() - Date.now();
-    if (ms <= 0) { dbg.countdown.textContent = 'expired'; clearCountdown(); return; }
+
+
+function startCountdown(){
+  if (!currentSession?.expiresAt) return;
+  const el = dbg.countdown || document.getElementById('countdown') || { textContent: '' };
+  // const el = document.getElementById('countdown'); // or dbg.countdown if that's your element
+  // const el = $('#countdown');
+  clearInterval(currentSession.countdownTimerId);
+
+  const tick = () => {
+    const ms = new Date(currentSession.expiresAt) - new Date();
+    if (ms <= 0) {
+      el.textContent = ' (expired)';
+      clearInterval(currentSession.countdownTimerId);
+      // Schedule export via grace; this handles the “just expired” case
+      setTimeout(() => maybeTriggerCsvExport(true), 90_000);
+      return;
+    }
     const m = Math.floor(ms/60000), s = Math.floor((ms%60000)/1000);
-    dbg.countdown.textContent = `${m}m ${s}s`;
-  }
+    el.textContent = ` (${m}m ${s}s)`;
+  };
   tick();
   currentSession.countdownTimerId = setInterval(tick, 1000);
 }
+
+
 function clearCountdown() {
   if (currentSession?.countdownTimerId) {
     clearInterval(currentSession.countdownTimerId);
@@ -289,48 +355,29 @@ async function unsubscribe() {
 }
 
 
-// async function unsubscribe() {
-//   try {
-//     const reg = await navigator.serviceWorker.getRegistration();
-//     const sub = await reg?.pushManager.getSubscription();
-//     const endpoint = sub?.endpoint || localStorage.getItem('lastEndpoint');
-//     if (sub) await sub.unsubscribe();
-//     log('Unsubscribed from push in browser.');
-
-//     const res = await fetch('/.netlify/functions/remove-subscription', {
-//       method: 'POST',
-//       headers: { 'Content-Type': 'application/json' },
-//       body: JSON.stringify({ endpoint })
-//     });
-
-//     if (!res.ok) throw new Error(`Backend remove failed (${res.status}): ${await res.text()}`);
-//     log('Removed from Neon:', await res.text());
-//   } catch (e) {
-//     log('Unsubscribe error:', e.message);
-//   } finally {
-//     refreshSubStatus();
-//   }
-// }
 
 async function exportCurrentSessionCsv() {
-  if (!currentSession?.id) return;
-  const url = new URL('/.netlify/functions/export-results', location.origin);
-  url.searchParams.set('session_id', currentSession.id);
-  url.searchParams.set('from', currentSession.startedAt);
-  url.searchParams.set('to', new Date().toISOString());
+  // if (!currentSession?.id) return;
+  // const url = new URL('/.netlify/functions/export-results', location.origin);
+  // url.searchParams.set('session_id', currentSession.id);
+  // url.searchParams.set('from', currentSession.startedAt);
+  // url.searchParams.set('to', new Date().toISOString());
 
-  const res = await fetch(url.toString());
-  if (!res.ok) throw new Error('export failed');
-  const blob = await res.blob();
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = `msak_results_${currentSession.id}.csv`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
+  // const res = await fetch(url.toString());
+  // if (!res.ok) throw new Error('export failed');
+  // const blob = await res.blob();
+  // const a = document.createElement('a');
+  // a.href = URL.createObjectURL(blob);
+  // a.download = `msak_results_${currentSession.id}.csv`;
+  // document.body.appendChild(a);
+  // a.click();
+  // a.remove();
 
-  if (currentSession?.timerId) clearTimeout(currentSession.timerId);
-  currentSession = null;
+  // if (currentSession?.timerId) clearTimeout(currentSession.timerId);
+  // currentSession = null;
+  const sid = currentSession?.subId;
+  if (!sid) { log('No subId to export'); return; }
+  downloadCsvForSession(sid);
 }
 
 
@@ -356,9 +403,11 @@ async function runMsak({ sid, streams = 2, durationMs = 5000 } = {}) {
           const mbps = (bps || 0) / 1e6;
           log(`↓ ${mbps.toFixed(2)} Mbps`);
           didSaveDL = true;
+
           sendResult('download', r, {
-            sid, session_id: currentSession?.id, streams, durationMs, goodput_bps_override: bps
+            sid, session_id: String(sid), streams, durationMs, goodput_bps_override: bps
           });
+
           markFinal('download');
         }
       },
@@ -370,9 +419,11 @@ async function runMsak({ sid, streams = 2, durationMs = 5000 } = {}) {
           const mbps = (bps || 0) / 1e6;
           log(`↑ ${mbps.toFixed(2)} Mbps`);
           didSaveUL = true;
+
           sendResult('upload', r, {
-            sid, session_id: currentSession?.id, streams, durationMs, goodput_bps_override: bps
+            sid, session_id: String(sid), streams, durationMs, goodput_bps_override: bps
           });
+
           markFinal('upload');
         }
       },
@@ -403,9 +454,11 @@ async function runMsak({ sid, streams = 2, durationMs = 5000 } = {}) {
       const mbps = (bps || 0) / 1e6;
       log(`↓ ${mbps.toFixed(2)} Mbps (fallback)`);
       didSaveDL = true;
+
       sendResult('download', lastDL, {
-        sid, session_id: currentSession?.id, streams, durationMs, goodput_bps_override: bps
+        sid, session_id: String(sid), streams, durationMs, goodput_bps_override: bps
       });
+
       markFinal('download');
     }
     if (!sawFinalUL && lastUL && !didSaveUL) {
@@ -413,9 +466,11 @@ async function runMsak({ sid, streams = 2, durationMs = 5000 } = {}) {
       const mbps = (bps || 0) / 1e6;
       log(`↑ ${mbps.toFixed(2)} Mbps (fallback)`);
       didSaveUL = true;
+
       sendResult('upload', lastUL, {
-        sid, session_id: currentSession?.id, streams, durationMs, goodput_bps_override: bps
+        sid, session_id: String(sid), streams, durationMs, goodput_bps_override: bps
       });
+
       markFinal('upload');
     }
   } catch (e) {
@@ -424,134 +479,6 @@ async function runMsak({ sid, streams = 2, durationMs = 5000 } = {}) {
     if (sid) activePushRuns.delete(sid);
   }
 }
-
-
-// async function runMsak({ sid, streams = 2, durationMs = 5000 } = {}) {
-//   try {
-//     const client = new msak.Client('web-client', '0.3.1', {
-
-//       // onDownloadResult: r => {
-//       //   if (r?.final) {
-//       //     const mbps = (r.goodput_bps || 0) / 1e6;
-//       //     log(`↓ ${mbps.toFixed(2)} Mbps`);
-//       //     sendResult('download', r, {
-//       //       sid,
-//       //       session_id: currentSession?.id,
-//       //       streams,
-//       //       durationMs
-//       //     });
-//       //     markFinal('download');
-//       //   }
-//       // },
-//       // onUploadResult: r => {
-//       //   if (r?.final) {
-//       //     const mbps = (r.goodput_bps || 0) / 1e6;
-//       //     log(`↑ ${mbps.toFixed(2)} Mbps`);
-//       //     sendResult('upload', r, {
-//       //       sid,
-//       //       session_id: currentSession?.id,
-//       //       streams,
-//       //       durationMs
-//       //     });
-//       //     markFinal('upload');
-//       //   }
-//       // },
-
-//       onDownloadResult: r => {
-//       if (r?.final) {
-//         const mbps = (r.goodput_bps || 0) / 1e6;
-//         log(`↓ ${mbps.toFixed(2)} Mbps`);
-//         resultDisplay.textContent += `Download (final):\n${JSON.stringify(r, null, 2)}\n\n`;
-
-//         sendResult('download', r, { sid, session_id: currentSession?.id, streams, durationMs });
-//         markFinal('download');
-//       }
-//     },
-//     onUploadResult: r => {
-//       if (r?.final) {
-//         const mbps = (r.goodput_bps || 0) / 1e6;
-//         log(`↑ ${mbps.toFixed(2)} Mbps`);
-//         resultDisplay.textContent += `Upload (final):\n${JSON.stringify(r, null, 2)}\n\n`;
-
-//         sendResult('upload', r, { sid, session_id: currentSession?.id, streams, durationMs });
-//         markFinal('upload');
-//       }
-//     },
-//       onError: e => log('MSAK error:', e?.stack || e?.message || e)
-//     });
-
-//     // tag the session/payload for server-side tracing
-//     client.metadata = { sid, trigger: 'push', ua: navigator.userAgent };
-
-//     // v0.3.1 shim — map args to instance fields before start()
-//     if (!client.runThroughputTest) {
-//       client.runThroughputTest = function (a, b, c) {
-//         let _sid, _streams, _durationMs;
-//         if (a && typeof a === 'object') ({ sid: _sid, streams: _streams, durationMs: _durationMs } = a);
-//         else { _sid = a; _streams = b; _durationMs = c; }
-
-//         if (_streams != null) this.streams = _streams;
-//         if (_durationMs != null) this.duration = _durationMs;
-//         if (_sid != null) this.metadata = { ...(this.metadata || {}), sid: _sid };
-
-//         return this.start();
-//       };
-//     }
-
-//     await client.runThroughputTest({ streams, durationMs });
-//   } catch (e) {
-//     log('runMsak error:', e?.message || e);
-//   }
-// }
-
-
-// async function runMsak({ sid, streams = 2, durationMs = 5000 } = {}) {
-//   try {
-//     const client = new msak.Client('web-client', '0.3.1', {
-
-//       onDownloadResult: r => {
-//         if (r?.final) {
-//           finalDownload = r;
-//           const streams = 4, durationMs = 3600; // your test args below
-//           sendResult('download', r, { sid, session_id: currentSession?.id, streams, durationMs });
-//           markFinal('download');
-//         }
-//       },
-//       onUploadResult: r => {
-//         if (r?.final) {
-//           finalUpload = r;
-//           const streams = 4, durationMs = 3600;
-//           sendResult('upload', r, { sid, session_id: currentSession?.id, streams, durationMs });
-//           markFinal('upload');
-//         }
-//       },
-
-//       onError: e => log('MSAK error:', e.stack || e.message || e)
-//     });
-
-//     // shim for 0.3.1
-//     // if (!client.runThroughputTest) {
-//     //   client.runThroughputTest = (args) => client.start(args);
-//     // }
-
-//     if (!client.runThroughputTest) {
-//       client.runThroughputTest = function (a, b, c) {
-//         let sid, streams, durationMs;
-//         if (a && typeof a === 'object') ({ sid, streams, durationMs } = a);
-//         else { sid = a; streams = b; durationMs = c; }
-//         if (streams) this.streams = streams;
-//         if (durationMs) this.duration = durationMs;
-//         if (sid) this.metadata = { ...(this.metadata || {}), sid };
-//         return this.start();
-//       };
-//     }
-
-
-//     await client.runThroughputTest({ streams, durationMs });
-//   } catch (e) {
-//     log('runMsak error:', e.message || e);
-//   }
-// }
 
 
 
@@ -656,516 +583,27 @@ async function runManualTest() {
 }
 
 
-// async function runManualTest() {
-//   updateStatus('running...');
-//   resultDisplay.textContent = '';
-//   log('Starting MSAK test');
-
-//   const sid = `manual-${Date.now()}`;
-//   const streams = 4;
-//   const durationMs = 5000;
-
-//   let lastDL = null, lastUL = null;
-//   let sawFinalDL = false, sawFinalUL = false;
-//   let printedKeys = false;
-
-//   try {
-//     const client = new msak.Client('web-client', '0.3.1', {
-//       onDownloadResult: r => {
-//         lastDL = r;
-//         if (!printedKeys && r) { printedKeys = true; log('Download keys:', Object.keys(r).join(','), 'final=', String(r.final)); }
-//         if (r?.final === true) {
-//           sawFinalDL = true;
-//           const bps = extractGoodputBps(r);
-//           const mbps = (bps || 0) / 1e6;
-//           log(`↓ ${mbps.toFixed(2)} Mbps`);
-//           resultDisplay.textContent += `Download (final):\n${JSON.stringify(r, null, 2)}\n\n`;
-//           sendResult('download', r, { sid, session_id: currentSession?.id, streams, durationMs, goodput_bps_override: bps });
-//           markFinal('download');
-//         }
-//       },
-//       onUploadResult: r => {
-//         lastUL = r;
-//         if (!printedKeys && r) { printedKeys = true; log('Upload keys:', Object.keys(r).join(','), 'final=', String(r.final)); }
-//         if (r?.final === true) {
-//           sawFinalUL = true;
-//           const bps = extractGoodputBps(r);
-//           const mbps = (bps || 0) / 1e6;
-//           log(`↑ ${mbps.toFixed(2)} Mbps`);
-//           resultDisplay.textContent += `Upload (final):\n${JSON.stringify(r, null, 2)}\n\n`;
-//           sendResult('upload', r, { sid, session_id: currentSession?.id, streams, durationMs, goodput_bps_override: bps });
-//           markFinal('upload');
-//         }
-//       },
-//       onError: e => log('MSAK error:', e?.stack || e?.message || e)
-//     });
-
-//     // 0.3.1 shim
-//     if (!client.runThroughputTest) {
-//       client.runThroughputTest = function (a, b, c) {
-//         let _sid, _streams, _durationMs;
-//         if (a && typeof a === 'object') ({ sid: _sid, streams: _streams, durationMs: _durationMs } = a);
-//         else { _sid = a; _streams = b; _durationMs = c; }
-//         if (_streams != null) this.streams = _streams;
-//         if (_durationMs != null) this.duration = _durationMs;
-//         if (_sid != null) this.metadata = { ...(this.metadata || {}), sid: _sid };
-//         return this.start();
-//       };
-//     }
-
-//     client.metadata = { sid, trigger: 'manual', ua: navigator.userAgent };
-//     await client.runThroughputTest({ streams, durationMs });
-
-//     // Fallback if no explicit finals were flagged
-//     if (!sawFinalDL && lastDL) {
-//       const bps = extractGoodputBps(lastDL);
-//       const mbps = (bps || 0) / 1e6;
-//       log(`↓ ${mbps.toFixed(2)} Mbps (fallback)`);
-//       resultDisplay.textContent += `Download (fallback final):\n${JSON.stringify(lastDL, null, 2)}\n\n`;
-//       sendResult('download', lastDL, { sid, session_id: currentSession?.id, streams, durationMs, goodput_bps_override: bps });
-//       markFinal('download');
-//     }
-
-//     // Fallback if no explicit finals were flagged
-//     if (!sawFinalDL && lastDL) {
-//       const bps = extractGoodputBps(lastDL);
-//       const mbps = (bps || 0) / 1e6;
-//       log(`↓ ${mbps.toFixed(2)} Mbps (fallback)`);
-//       resultDisplay.textContent += `Download (fallback final):\n${JSON.stringify(lastDL, null, 2)}\n\n`;
-//       sendResult('download', lastDL, {
-//         sid, session_id: currentSession?.id, streams, durationMs, goodput_bps_override: bps
-//       });
-//       markFinal('download');
-//     }
-
-//     if (!sawFinalUL && lastUL) {
-//       const bps = extractGoodputBps(lastUL);
-//       const mbps = (bps || 0) / 1e6;
-//       log(`↑ ${mbps.toFixed(2)} Mbps (fallback)`);
-//       resultDisplay.textContent += `Upload (fallback final):\n${JSON.stringify(lastUL, null, 2)}\n\n`;
-//       sendResult('upload', lastUL, {
-//         sid, session_id: currentSession?.id, streams, durationMs, goodput_bps_override: bps
-//       });
-//       markFinal('upload');
-//     }
-
-//     // if (!sawFinalUL && lastUL) {
-
-//     //   const bps  = extractGoodputBps(r);
-//     //   const mbps = (bps || 0) / 1e6;
-//     //   log(`↓ ${mbps.toFixed(2)} Mbps`);
-
-//     //   log(`↑ ${mbps.toFixed(2)} Mbps (fallback)`);
-//     //   resultDisplay.textContent += `Upload (fallback final):\n${JSON.stringify(lastUL, null, 2)}\n\n`;
-
-
-//     //   sendResult('download', r, { sid, session_id: currentSession?.id, streams, durationMs, goodput_bps_override: bps });
-
-//     //   // const bps = extractGoodputBps(lastUL);
-//     //   // const mbps = (bps || 0) / 1e6;
-//     //   // log(`↑ ${mbps.toFixed(2)} Mbps (fallback)`);
-//     //   // resultDisplay.textContent += `Upload (fallback final):\n${JSON.stringify(lastUL, null, 2)}\n\n`;
-//     //   // sendResult('upload', lastUL, { sid, session_id: currentSession?.id, streams, durationMs, goodput_bps_override: bps });
-//     //   markFinal('upload');
-//     // }
-
-//     updateStatus('complete');
-//   } catch (e) {
-//     log('runManualTest error:', e?.message || e);
-//     updateStatus('error');
-//   }
-// }
-
-
-// async function runManualTest() {
-//   updateStatus('running...');
-//   resultDisplay.textContent = '';
-//   log('Starting MSAK test');
-
-//   const sid = `manual-${Date.now()}`;
-//   const streams = 4;
-//   const durationMs = 5000;
-
-//   let lastDL = null, lastUL = null;
-//   let sawFinalDL = false, sawFinalUL = false;
-//   let printedKeys = false;
-
-//   try {
-//     const client = new msak.Client('web-client', '0.3.1', {
-//       onDownloadResult: r => {
-
-//         lastDL = r;
-//         if (!printedKeys && r) { printedKeys = true; log('Download keys:', Object.keys(r).join(','), 'final=', String(r.final)); }
-//         if (r?.final === true) {
-//           sawFinalDL = true;
-//           const mbps = (r.goodput_bps || 0) / 1e6;
-//           log(`↓ ${mbps.toFixed(2)} Mbps`);
-//           resultDisplay.textContent += `Download (final):\n${JSON.stringify(r, null, 2)}\n\n`;
-//           sendResult('download', r, { sid, session_id: currentSession?.id, streams, durationMs }); // logs ok/failed
-//           markFinal('download');
-//         }
-//       },
-//       onUploadResult: r => {
-//         lastUL = r;
-//         if (!printedKeys && r) { printedKeys = true; log('Upload keys:', Object.keys(r).join(','), 'final=', String(r.final)); }
-//         if (r?.final === true) {
-//           sawFinalUL = true;
-//           const mbps = (r.goodput_bps || 0) / 1e6;
-//           log(`↑ ${mbps.toFixed(2)} Mbps`);
-//           resultDisplay.textContent += `Upload (final):\n${JSON.stringify(r, null, 2)}\n\n`;
-//           sendResult('upload', r, { sid, session_id: currentSession?.id, streams, durationMs });
-//           markFinal('upload');
-//         }
-//       },
-//       onError: e => log('MSAK error:', e?.stack || e?.message || e)
-//     });
-
-//     // 0.3.1 shim
-//     if (!client.runThroughputTest) {
-//       client.runThroughputTest = function (a, b, c) {
-//         let _sid, _streams, _durationMs;
-//         if (a && typeof a === 'object') ({ sid: _sid, streams: _streams, durationMs: _durationMs } = a);
-//         else { _sid = a; _streams = b; _durationMs = c; }
-//         if (_streams != null) this.streams = _streams;
-//         if (_durationMs != null) this.duration = _durationMs;
-//         if (_sid != null) this.metadata = { ...(this.metadata || {}), sid: _sid };
-//         return this.start();
-//       };
-//     }
-
-//     client.metadata = { sid, trigger: 'manual', ua: navigator.userAgent };
-//     await client.runThroughputTest({ streams, durationMs });
-
-//     // 🔁 Fallback if SDK never flagged final=true
-//     if (!sawFinalDL && lastDL) {
-//       const r = lastDL; const mbps = (r.goodput_bps || 0) / 1e6;
-//       log(`↓ ${mbps.toFixed(2)} Mbps (fallback)`);
-//       resultDisplay.textContent += `Download (fallback final):\n${JSON.stringify(r, null, 2)}\n\n`;
-//       sendResult('download', r, { sid, session_id: currentSession?.id, streams, durationMs });
-//       markFinal('download');
-//     }
-//     if (!sawFinalUL && lastUL) {
-//       const r = lastUL; const mbps = (r.goodput_bps || 0) / 1e6;
-//       log(`↑ ${mbps.toFixed(2)} Mbps (fallback)`);
-//       resultDisplay.textContent += `Upload (fallback final):\n${JSON.stringify(r, null, 2)}\n\n`;
-//       sendResult('upload', r, { sid, session_id: currentSession?.id, streams, durationMs });
-//       markFinal('upload');
-//     }
-
-//     updateStatus('complete');
-//   } catch (e) {
-//     log('runManualTest error:', e?.message || e);
-//     updateStatus('error');
-//   }
-// }
-
-
-// async function runManualTest() {
-//   updateStatus('running...');
-//   resultDisplay.textContent = '';
-//   log('Starting MSAK test');
-
-//   // test args used for logging + save-result
-//   const sid = `manual-${Date.now()}`;
-//   const streams = 4;
-//   const durationMs = 3600; // ≈3.6s test; change if you want longer
-
-//   try {
-//     const client = new msak.Client('web-client', '0.3.1', {
-
-//       onDownloadResult: r => {
-//         if (r?.final) {
-//           const mbps = (r.goodput_bps || 0) / 1e6;
-//           log(`↓ ${mbps.toFixed(2)} Mbps`);
-//           resultDisplay.textContent += `Download (final):\n${JSON.stringify(r, null, 2)}\n\n`;
-
-//           sendResult('download', r, { sid, session_id: currentSession?.id, streams, durationMs });
-//           markFinal('download');
-//         }
-//       },
-//       onUploadResult: r => {
-//         if (r?.final) {
-//           const mbps = (r.goodput_bps || 0) / 1e6;
-//           log(`↑ ${mbps.toFixed(2)} Mbps`);
-//           resultDisplay.textContent += `Upload (final):\n${JSON.stringify(r, null, 2)}\n\n`;
-
-//           sendResult('upload', r, { sid, session_id: currentSession?.id, streams, durationMs });
-//           markFinal('upload');
-//         }
-//       },
-//       // onDownloadResult: r => {
-//       //   log('[DL] cb final=', String(!!r?.final));
-//       //   if (r?.final) {
-//       //     // show immediately
-//       //     const mbps = (r.goodput_bps || 0) / 1e6;
-//       //     log(`↓ ${mbps.toFixed(2)} Mbps`);
-//       //     resultDisplay.textContent += `Download (final):\n${JSON.stringify(r, null, 2)}\n\n`;
-
-//       //     // persist
-//       //     sendResult('download', r, { sid, session_id: currentSession?.id, streams, durationMs });
-//       //     markFinal('download');
-//       //   }
-//       // },
-//       // onUploadResult: r => {
-//       //   log('[UL] cb final=', String(!!r?.final));
-//       //   if (r?.final) {
-//       //     // show immediately
-//       //     const mbps = (r.goodput_bps || 0) / 1e6;
-//       //     log(`↑ ${mbps.toFixed(2)} Mbps`);
-//       //     resultDisplay.textContent += `Upload (final):\n${JSON.stringify(r, null, 2)}\n\n`;
-
-//       //     // persist
-//       //     sendResult('upload', r, { sid, session_id: currentSession?.id, streams, durationMs });
-//       //     markFinal('upload');
-//       //   }
-//       // },
-//       onError: e => log('MSAK error:', e && (e.stack || e.message) || e)
-//     });
-
-//     // optional metadata
-//     client.metadata = { sid, trigger: 'manual', ua: navigator.userAgent };
-
-//     // ✅ Add shim for v0.3.1 if needed
-//     if (!client.runThroughputTest) {
-//       client.runThroughputTest = function (a, b, c) {
-//         let sid, streams, durationMs;
-//         if (a && typeof a === 'object') ({ sid, streams, durationMs } = a);
-//         else { sid = a; streams = b; durationMs = c; }
-//         if (streams) this.streams = streams;
-//         if (durationMs) this.duration = durationMs;
-//         if (sid) this.metadata = { ...(this.metadata || {}), sid };
-//         return this.start();
-//       };
-//     }
-
-
-//     // run
-//     await client.runThroughputTest({ streams, durationMs });
-
-//     updateStatus('complete');
-//   } catch (err) {
-//     log('runManualTest error:', err && err.message || err);
-//     updateStatus('error');
-//   }
-// }
-
-
-// async function runManualTest() {
-//   updateStatus('running...');
-//   resultDisplay.textContent = '';
-//   log('Starting MSAK test');
-
-//   try {
-//     const sid = `manual-${Date.now()}`;
-//     let finalDownload = null;
-//     let finalUpload = null;
-
-//     const client = new msak.Client('web-client', '0.3.1', {
-//       // onDownloadResult: (r) => { finalDownload = r; },
-//       // onUploadResult:   (r) => { finalUpload = r; },
-
-//       onDownloadResult: r => {
-//         if (r?.final) {
-//           finalDownload = r;
-//           const streams = 4, durationMs = 3600;
-//           sendResult('download', r, { sid, session_id: currentSession?.id, streams, durationMs });
-//           markFinal('download');
-//         }
-//       },
-//       onUploadResult: r => {
-//         if (r?.final) {
-//           finalUpload = r;
-//           const streams = 4, durationMs = 3600;
-//           sendResult('upload', r, { sid, session_id: currentSession?.id, streams, durationMs });
-//           markFinal('upload');
-//         }
-//       },
-//       onError:          (e) => log('MSAK error:', e.stack || e.message || e)
-//     });
-
-//     client.metadata = { sid, trigger: 'manual', ua: navigator.userAgent };
-
-    // // ✅ Add shim for v0.3.1 if needed
-    // if (!client.runThroughputTest) {
-    //   client.runThroughputTest = function (a, b, c) {
-    //     let sid, streams, durationMs;
-    //     if (a && typeof a === 'object') ({ sid, streams, durationMs } = a);
-    //     else { sid = a; streams = b; durationMs = c; }
-    //     if (streams) this.streams = streams;
-    //     if (durationMs) this.duration = durationMs;
-    //     if (sid) this.metadata = { ...(this.metadata || {}), sid };
-    //     return this.start();
-    //   };
-    // }
-
-//     await client.runThroughputTest({ sid, streams: 4, durationMs: 3600 });
-
-//     if (finalDownload) {
-//       const mbpsDown = (finalDownload.goodput_bps || 0) / 1e6;
-//       log(`↓ ${mbpsDown.toFixed(2)} Mbps`);
-//       resultDisplay.textContent += `Download:\n${JSON.stringify(finalDownload, null, 2)}\n\n`;
-//       await sendResult('download', finalDownload, { sid, streams: 4, durationMs: 3600 });
-//     }
-
-//     if (finalUpload) {
-//       const mbpsUp = (finalUpload.goodput_bps || 0) / 1e6;
-//       log(`↑ ${mbpsUp.toFixed(2)} Mbps`);
-//       resultDisplay.textContent += `Upload:\n${JSON.stringify(finalUpload, null, 2)}\n\n`;
-//       await sendResult('upload', finalUpload, { sid, streams: 4, durationMs: 3600 });
-//     }
-//     updateStatus('complete');
-//   } catch (err) {
-//     log(`Error: ${err.message}`);
-//     updateStatus('error');
-//   }
-// }
-
-// async function subscribeFor1HourThenUnsubscribe() {
-//   log('Subscribing for 1 hour');
-//   await subscribe({ ttlHours: 1 });
-//   log('Subscribed. Will unsubscribe after 1 hour.');
-
-//   setTimeout(() => {
-//     log('Auto-unsubscribing after 1 hour');
-//     unsubscribe();
-//   }, 60 * 60 * 1000);
-// }
-
-
-// Put this helper near your other utils:
-function downloadCsvForSession(sessionId) {
-  const a = document.createElement('a');
-  a.href = `/.netlify/functions/export-results?session_id=${encodeURIComponent(sessionId)}`;
-  a.download = `msak_results_${sessionId}.csv`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-}
-
-async function exportCurrentSessionCsv() {
-  const sid = currentSession?.subId;          // <-- use subId (numeric), not the UUID
-  if (!sid) { log('No subId to export'); return; }
-  downloadCsvForSession(sid);
-}
-
-
-// async function oneHourRunThenCsv() {
-//   // fresh session
-//   if (currentSession?.countdownTimerId) clearInterval(currentSession.countdownTimerId);
-//   if (currentSession?.timerId) clearTimeout(currentSession.timerId);
-
-//   currentSession = {
-//     id: crypto.randomUUID(),
-//     startedAt: new Date().toISOString(),
-//     subId: null,
-//     expiresAt: null,
-//     runCount: 0,
-//     countdownTimerId: null,
-//     timerId: null
-//   };
-
-//   try {
-//     // Ensure browser-side PushSubscription (no TTL here)
-//     const browserSub = await ensureSubscription();
-
-//     const flat = { ...toServerSubscription(browserSub), ua: navigator.userAgent, ttlHours: 1 };
-//     if (!flat.endpoint || !flat.p256dh || !flat.auth) {
-//       log('Client mapping error: missing endpoint/p256dh/auth', JSON.stringify(flat));
-//     }
-
-
-//     const r = await fetch('/.netlify/functions/store-subscription', {
-//       method: 'POST',
-//       headers: { 'content-type': 'application/json' },
-//       body: JSON.stringify({ ...toServerSubscription(browserSub), ua: navigator.userAgent, ttlHours: 1 })
-//     });
-
-//     if (!r.ok) {
-//       const text = await r.text().catch(()=> '');
-//       log('store-subscription 400 body:', text);
-//       throw new Error(`store-subscription failed (${r.status})`);
-//     }
-
-//     const data = await r.json();
-//     if (!data?.ok) throw new Error('store-subscription returned not ok');
-
-//     currentSession.subId = data.id ?? null;
-//     currentSession.expiresAt = data.app_expires_at ?? null;
-
-//     log('Starting 1-hour session: ' + currentSession.id);
-//     await updateDebugLocal();     // local subscription state
-//     await updateDebugServer();    // server truth
-//     startCountdown();             // live countdown to app_expires_at
-
-//     // Safety timer: auto-unsub + export after 60m
-//     currentSession.timerId = setTimeout(async () => {
-//       await unsubscribe();             // removes locally + calls remove-subscription
-//       await exportCurrentSessionCsv(); // triggers CSV download
-//     }, 60 * 60 * 1000);
-
-//   } catch (e) {
-//     log('oneHourRunThenCsv error: ' + (e?.message || e));
-//     // best-effort cleanup
-//     if (currentSession?.countdownTimerId) clearInterval(currentSession.countdownTimerId);
-//     if (currentSession?.timerId) clearTimeout(currentSession.timerId);
-//     currentSession = null;
-//   }
-// }
-
-
-
-// async function sendResult(direction, r, { sid, session_id, streams, durationMs }) {
-//   const numericSid = typeof sid === 'number' || /^\d+$/.test(String(sid))
-//     ? Number(sid) : undefined;
-
-//   const body = {
-//     direction,                          // 'download' | 'upload'
-//     session_id: session_id ?? null,     // keep null if unknown
-//     goodput_bps: r?.goodput_bps ?? null,
-//     streams: streams ?? null,
-//     duration_ms: durationMs ?? null,
-//     result_json: r ?? null
-//   };
-//   if (numericSid !== undefined) body.sub_id = numericSid;
-
-//   try {
-//     const res = await fetch('/.netlify/functions/save-result', {
-//       method: 'POST',
-//       headers: { 'content-type': 'application/json' },
-//       body: JSON.stringify(body)
-//     });
-
-//     const text = await res.text().catch(() => '');
-//     if (!res.ok) {
-//       log('save-result failed', res.status, text);
-//     } else {
-//       log('save-result ok', text);      // <-- will include { ok:true, id,... } if your function RETURNINGs
-//     }
-//   } catch (e) {
-//     log('save-result fetch error', e?.message || e);
-//   }
-// }
-
 async function oneHourRunThenCsv() {
   // fresh session
   if (currentSession?.countdownTimerId) clearInterval(currentSession.countdownTimerId);
   if (currentSession?.timerId) clearTimeout(currentSession.timerId);
 
   currentSession = {
-    id: crypto.randomUUID(),        // local UI id (not used for export)
+    id: crypto.randomUUID(),
     startedAt: new Date().toISOString(),
-    subId: null,                    // will be set to numeric id from server
-    expiresAt: null,                // ISO string from server
+    subId: null,
+    expiresAt: null,
     runCount: 0,
     countdownTimerId: null,
-    timerId: null
+    timerId: null,
+    didExport: false
   };
 
   try {
-    // Ensure browser-side PushSubscription (no TTL here)
+    // Ensure PushSubscription
     const browserSub = await ensureSubscription();
 
-    // Flatten for server + 1-hour TTL
+    // Send to server with 1-hour TTL
     const flat = { ...toServerSubscription(browserSub), ua: navigator.userAgent, ttlHours: 1 };
     if (!flat.endpoint || !flat.p256dh || !flat.auth) {
       log('Client mapping error: missing endpoint/p256dh/auth', JSON.stringify(flat));
@@ -1178,7 +616,7 @@ async function oneHourRunThenCsv() {
     });
 
     if (!r.ok) {
-      const text = await r.text().catch(() => '');
+      const text = await r.text().catch(()=> '');
       log('store-subscription body:', text);
       throw new Error(`store-subscription failed (${r.status})`);
     }
@@ -1186,56 +624,33 @@ async function oneHourRunThenCsv() {
     const data = await r.json();
     if (!data?.ok) throw new Error('store-subscription returned not ok');
 
-    // Use the server-assigned id as the session_id for all push runs
     currentSession.subId = data.id ?? null;
     currentSession.expiresAt = data.app_expires_at ?? null;
 
-    log('Starting 1-hour session: ' + currentSession.id + ' (subId=' + currentSession.subId + ')');
-    await updateDebugLocal();     // local subscription state
-    await updateDebugServer();    // server truth
-    startCountdown();             // live countdown to app_expires_at
+    log(`Starting 1-hour session ${currentSession.id} (subId=${currentSession.subId})`);
+    saveSessionState();            // persist now
+    await updateDebugLocal();
+    await updateDebugServer();
+    startCountdown();
+    ensureExportWatcher();
 
-    // Optional: kick off an immediate run (scheduler will also ping every 15m)
+    // Optional: immediate run
     if (currentSession.subId != null) {
       try { runMsak({ sid: String(currentSession.subId), streams: 2, durationMs: 5000 }); } catch {}
     }
 
-    // Schedule auto-unsubscribe + CSV shortly after server expiry
-    const graceMs = 90_000; // 1.5m grace to allow the last scheduled test to finish
+    // Precise “primary” timer based on server expiry (+grace)
     const now = Date.now();
-    const expiryTs = currentSession.expiresAt ? new Date(currentSession.expiresAt).getTime() : (now + 60 * 60 * 1000);
-    const delay = Math.max(5_000, (expiryTs - now) + graceMs);
-
-    currentSession.timerId = setTimeout(async () => {
-      try {
-        await unsubscribe();  // removes locally + calls remove-subscription
-      } finally {
-        // Prefer export by subId (this is what msak_results.session_id uses)
-        const sid = currentSession?.subId ?? null;
-        if (typeof exportCurrentSessionCsv === 'function') {
-          // If your export helper accepts a sessionId param, pass it:
-          try { await exportCurrentSessionCsv(sid); return; } catch {}
-        }
-        // Fallback: trigger CSV download directly
-        if (sid) {
-          const a = document.createElement('a');
-          a.href = `/.netlify/functions/export-results?session_id=${encodeURIComponent(sid)}`;
-          a.download = `msak_results_${sid}.csv`;
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-        } else {
-          log('No subId available for CSV export.');
-        }
-      }
-    }, delay);
+    const expiryTs = currentSession.expiresAt ? new Date(currentSession.expiresAt).getTime() : (now + 60*60*1000);
+    const delay = Math.max(5_000, (expiryTs - now) + 90_000);
+    currentSession.timerId = setTimeout(() => maybeTriggerCsvExport(true), delay);
 
   } catch (e) {
     log('oneHourRunThenCsv error: ' + (e?.message || e));
-    // best-effort cleanup
     if (currentSession?.countdownTimerId) clearInterval(currentSession.countdownTimerId);
     if (currentSession?.timerId) clearTimeout(currentSession.timerId);
     currentSession = null;
+    clearSessionState();
   }
 }
 
@@ -1284,19 +699,6 @@ runBtn?.addEventListener('click', runManualTest);
 document.getElementById('subscribeOnceBtn')?.addEventListener('click', oneHourRunThenCsv);
 
 
-// navigator.serviceWorker?.addEventListener('message', (evt) => {
-//   if (evt.data?.type === 'RUN_TEST') {
-//     log('Received push-triggered test request');
-//     runManualTest();
-//   }
-// });
-
-// navigator.serviceWorker?.addEventListener('message', (evt) => {
-//   if (evt.data?.type === 'RUN_TEST') {
-//     log('Received push-triggered test request');
-//     runMsak(evt.data.payload || {}); // pass payload containing sid/streams/durationMs
-//   }
-// });
 
 
 navigator.serviceWorker?.addEventListener('message', (evt) => {
@@ -1314,4 +716,16 @@ if (navigator.permissions?.query) {
 }
 
 refreshSubStatus();
+updateDebugServer();
 
+// Restore/export pending CSV if a 1-hour session was in progress
+(function restoreExportIfPending(){
+  const s = loadSessionState();
+  if (s && !s.didExport) {
+    currentSession = s;
+    startCountdown();
+    ensureExportWatcher();
+    // In case we already passed expiry while the tab was closed
+    maybeTriggerCsvExport(false);
+  }
+})();
