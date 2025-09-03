@@ -1032,68 +1032,85 @@ async function runManualTest() {
 // }
 
 
-async function oneHourRunThenCsv() {
-  // fresh session
-  if (currentSession?.countdownTimerId) clearInterval(currentSession.countdownTimerId);
-  if (currentSession?.timerId) clearTimeout(currentSession.timerId);
-
-  currentSession = {
-    id: crypto.randomUUID(),
-    startedAt: new Date().toISOString(),
-    subId: null,
-    expiresAt: null,
-    runCount: 0,
-    countdownTimerId: null,
-    timerId: null
-  };
-
-  try {
-    // Ensure browser-side PushSubscription (no TTL here)
-    const browserSub = await ensureSubscription();
-
-    const flat = { ...toServerSubscription(browserSub), ua: navigator.userAgent, ttlHours: 1 };
-    if (!flat.endpoint || !flat.p256dh || !flat.auth) {
-      log('Client mapping error: missing endpoint/p256dh/auth', JSON.stringify(flat));
-    }
-
-
-    const r = await fetch('/.netlify/functions/store-subscription', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ...toServerSubscription(browserSub), ua: navigator.userAgent, ttlHours: 1 })
-    });
-
-    if (!r.ok) {
-      const text = await r.text().catch(()=> '');
-      log('store-subscription 400 body:', text);
-      throw new Error(`store-subscription failed (${r.status})`);
-    }
-
-    const data = await r.json();
-    if (!data?.ok) throw new Error('store-subscription returned not ok');
-
-    currentSession.subId = data.id ?? null;
-    currentSession.expiresAt = data.app_expires_at ?? null;
-
-    log('Starting 1-hour session: ' + currentSession.id);
-    await updateDebugLocal();     // local subscription state
-    await updateDebugServer();    // server truth
-    startCountdown();             // live countdown to app_expires_at
-
-    // Safety timer: auto-unsub + export after 60m
-    currentSession.timerId = setTimeout(async () => {
-      await unsubscribe();             // removes locally + calls remove-subscription
-      await exportCurrentSessionCsv(); // triggers CSV download
-    }, 60 * 60 * 1000);
-
-  } catch (e) {
-    log('oneHourRunThenCsv error: ' + (e?.message || e));
-    // best-effort cleanup
-    if (currentSession?.countdownTimerId) clearInterval(currentSession.countdownTimerId);
-    if (currentSession?.timerId) clearTimeout(currentSession.timerId);
-    currentSession = null;
-  }
+// Put this helper near your other utils:
+function downloadCsvForSession(sessionId) {
+  const a = document.createElement('a');
+  a.href = `/.netlify/functions/export-results?session_id=${encodeURIComponent(sessionId)}`;
+  a.download = `msak_results_${sessionId}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 }
+
+async function exportCurrentSessionCsv() {
+  const sid = currentSession?.subId;          // <-- use subId (numeric), not the UUID
+  if (!sid) { log('No subId to export'); return; }
+  downloadCsvForSession(sid);
+}
+
+
+// async function oneHourRunThenCsv() {
+//   // fresh session
+//   if (currentSession?.countdownTimerId) clearInterval(currentSession.countdownTimerId);
+//   if (currentSession?.timerId) clearTimeout(currentSession.timerId);
+
+//   currentSession = {
+//     id: crypto.randomUUID(),
+//     startedAt: new Date().toISOString(),
+//     subId: null,
+//     expiresAt: null,
+//     runCount: 0,
+//     countdownTimerId: null,
+//     timerId: null
+//   };
+
+//   try {
+//     // Ensure browser-side PushSubscription (no TTL here)
+//     const browserSub = await ensureSubscription();
+
+//     const flat = { ...toServerSubscription(browserSub), ua: navigator.userAgent, ttlHours: 1 };
+//     if (!flat.endpoint || !flat.p256dh || !flat.auth) {
+//       log('Client mapping error: missing endpoint/p256dh/auth', JSON.stringify(flat));
+//     }
+
+
+//     const r = await fetch('/.netlify/functions/store-subscription', {
+//       method: 'POST',
+//       headers: { 'content-type': 'application/json' },
+//       body: JSON.stringify({ ...toServerSubscription(browserSub), ua: navigator.userAgent, ttlHours: 1 })
+//     });
+
+//     if (!r.ok) {
+//       const text = await r.text().catch(()=> '');
+//       log('store-subscription 400 body:', text);
+//       throw new Error(`store-subscription failed (${r.status})`);
+//     }
+
+//     const data = await r.json();
+//     if (!data?.ok) throw new Error('store-subscription returned not ok');
+
+//     currentSession.subId = data.id ?? null;
+//     currentSession.expiresAt = data.app_expires_at ?? null;
+
+//     log('Starting 1-hour session: ' + currentSession.id);
+//     await updateDebugLocal();     // local subscription state
+//     await updateDebugServer();    // server truth
+//     startCountdown();             // live countdown to app_expires_at
+
+//     // Safety timer: auto-unsub + export after 60m
+//     currentSession.timerId = setTimeout(async () => {
+//       await unsubscribe();             // removes locally + calls remove-subscription
+//       await exportCurrentSessionCsv(); // triggers CSV download
+//     }, 60 * 60 * 1000);
+
+//   } catch (e) {
+//     log('oneHourRunThenCsv error: ' + (e?.message || e));
+//     // best-effort cleanup
+//     if (currentSession?.countdownTimerId) clearInterval(currentSession.countdownTimerId);
+//     if (currentSession?.timerId) clearTimeout(currentSession.timerId);
+//     currentSession = null;
+//   }
+// }
 
 
 
@@ -1128,6 +1145,100 @@ async function oneHourRunThenCsv() {
 //     log('save-result fetch error', e?.message || e);
 //   }
 // }
+
+async function oneHourRunThenCsv() {
+  // fresh session
+  if (currentSession?.countdownTimerId) clearInterval(currentSession.countdownTimerId);
+  if (currentSession?.timerId) clearTimeout(currentSession.timerId);
+
+  currentSession = {
+    id: crypto.randomUUID(),        // local UI id (not used for export)
+    startedAt: new Date().toISOString(),
+    subId: null,                    // will be set to numeric id from server
+    expiresAt: null,                // ISO string from server
+    runCount: 0,
+    countdownTimerId: null,
+    timerId: null
+  };
+
+  try {
+    // Ensure browser-side PushSubscription (no TTL here)
+    const browserSub = await ensureSubscription();
+
+    // Flatten for server + 1-hour TTL
+    const flat = { ...toServerSubscription(browserSub), ua: navigator.userAgent, ttlHours: 1 };
+    if (!flat.endpoint || !flat.p256dh || !flat.auth) {
+      log('Client mapping error: missing endpoint/p256dh/auth', JSON.stringify(flat));
+    }
+
+    const r = await fetch('/.netlify/functions/store-subscription', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(flat)
+    });
+
+    if (!r.ok) {
+      const text = await r.text().catch(() => '');
+      log('store-subscription body:', text);
+      throw new Error(`store-subscription failed (${r.status})`);
+    }
+
+    const data = await r.json();
+    if (!data?.ok) throw new Error('store-subscription returned not ok');
+
+    // Use the server-assigned id as the session_id for all push runs
+    currentSession.subId = data.id ?? null;
+    currentSession.expiresAt = data.app_expires_at ?? null;
+
+    log('Starting 1-hour session: ' + currentSession.id + ' (subId=' + currentSession.subId + ')');
+    await updateDebugLocal();     // local subscription state
+    await updateDebugServer();    // server truth
+    startCountdown();             // live countdown to app_expires_at
+
+    // Optional: kick off an immediate run (scheduler will also ping every 15m)
+    if (currentSession.subId != null) {
+      try { runMsak({ sid: String(currentSession.subId), streams: 2, durationMs: 5000 }); } catch {}
+    }
+
+    // Schedule auto-unsubscribe + CSV shortly after server expiry
+    const graceMs = 90_000; // 1.5m grace to allow the last scheduled test to finish
+    const now = Date.now();
+    const expiryTs = currentSession.expiresAt ? new Date(currentSession.expiresAt).getTime() : (now + 60 * 60 * 1000);
+    const delay = Math.max(5_000, (expiryTs - now) + graceMs);
+
+    currentSession.timerId = setTimeout(async () => {
+      try {
+        await unsubscribe();  // removes locally + calls remove-subscription
+      } finally {
+        // Prefer export by subId (this is what msak_results.session_id uses)
+        const sid = currentSession?.subId ?? null;
+        if (typeof exportCurrentSessionCsv === 'function') {
+          // If your export helper accepts a sessionId param, pass it:
+          try { await exportCurrentSessionCsv(sid); return; } catch {}
+        }
+        // Fallback: trigger CSV download directly
+        if (sid) {
+          const a = document.createElement('a');
+          a.href = `/.netlify/functions/export-results?session_id=${encodeURIComponent(sid)}`;
+          a.download = `msak_results_${sid}.csv`;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+        } else {
+          log('No subId available for CSV export.');
+        }
+      }
+    }, delay);
+
+  } catch (e) {
+    log('oneHourRunThenCsv error: ' + (e?.message || e));
+    // best-effort cleanup
+    if (currentSession?.countdownTimerId) clearInterval(currentSession.countdownTimerId);
+    if (currentSession?.timerId) clearTimeout(currentSession.timerId);
+    currentSession = null;
+  }
+}
+
 
 async function sendResult(direction, r, { sid, session_id, streams, durationMs, goodput_bps_override }) {
   // only include sub_id if numeric
