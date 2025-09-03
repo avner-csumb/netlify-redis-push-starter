@@ -62,6 +62,88 @@ function ensureExportWatcher(){
 }
 
 
+// ===== Run aggregation + per-run CSV + summary =====
+const summaryEl =
+  document.getElementById('run-summary') ||
+  document.getElementById('resultDisplay'); // fallback if you don't add a dedicated node
+
+let runPieces = new Map();  // runId -> { session_id, sub_id, streams, duration_ms, pieces:{download, upload} }
+let recentRuns = [];        // [{ when, dlMbps, ulMbps }], newest first
+
+function downloadCsvForRun(run) {
+  const hdr = ['test_time','direction','goodput_mbps','streams','duration_ms','session_id','sub_id'];
+  const lines = [hdr.join(',')];
+  for (const dir of ['download','upload']) {
+    const p = run.pieces[dir];
+    if (!p) continue;
+    const mbps = (Number(p.goodput_bps || 0) / 1e6).toFixed(2);
+    lines.push([
+      p.test_time,
+      dir,
+      mbps,
+      run.streams ?? '',
+      run.duration_ms ?? '',
+      run.session_id ?? '',
+      run.sub_id ?? ''
+    ].join(','));
+  }
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+  const a = document.createElement('a');
+  const ts = (run.pieces.download?.test_time || run.pieces.upload?.test_time || new Date().toISOString()).replace(/[:.]/g,'-');
+  a.href = URL.createObjectURL(blob);
+  a.download = `msak_run_${run.session_id || run.sub_id || 'unknown'}_${ts}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+  a.remove();
+}
+
+function renderRunSummary() {
+  if (!summaryEl) return;
+  if (!recentRuns.length) return;
+  const avg = arr => arr.length ? (arr.reduce((s,x)=>s+x,0) / arr.length) : 0;
+  const dlAvg = avg(recentRuns.map(r=>r.dlMbps));
+  const ulAvg = avg(recentRuns.map(r=>r.ulMbps));
+  const lines = [
+    `Last ${recentRuns.length} runs:`,
+    ...recentRuns.map((r,i)=>`#${recentRuns.length - i}  DL ${r.dlMbps.toFixed(1)} Mbps  |  UL ${r.ulMbps.toFixed(1)} Mbps  @ ${new Date(r.when).toLocaleTimeString()}`),
+    `— Averages —  DL ${dlAvg.toFixed(1)} Mbps  |  UL ${ulAvg.toFixed(1)} Mbps`
+  ];
+  // If resultDisplay shows raw JSON, prefer textContent to keep it simple
+  summaryEl.textContent = lines.join('\n');
+}
+
+function collectRunPiece({ runId, direction, saved, streams, durationMs, session_id, sub_id }) {
+  const r = runPieces.get(runId) || {
+    pieces: {},
+    streams,
+    duration_ms: durationMs,
+    session_id,
+    sub_id
+  };
+  r.pieces[direction] = saved; // { id, test_time, direction, goodput_bps }
+  runPieces.set(runId, r);
+
+  // When both directions are in, emit CSV + update summary
+  if (r.pieces.download && r.pieces.upload) {
+    downloadCsvForRun(r);
+    const when = r.pieces.download?.test_time || r.pieces.upload?.test_time || new Date().toISOString();
+    const dlMbps = (Number(r.pieces.download.goodput_bps || 0) / 1e6);
+    const ulMbps = (Number(r.pieces.upload.goodput_bps || 0) / 1e6);
+    recentRuns.unshift({ when, dlMbps, ulMbps });
+    recentRuns = recentRuns.slice(0, 4);
+    renderRunSummary();
+    runPieces.delete(runId);
+  }
+}
+
+
+
+
+
+
+
+
 
 // Track per-test completion (download + upload finals)
 let pendingFinal = { download: false, upload: false };
@@ -381,7 +463,119 @@ async function exportCurrentSessionCsv() {
 }
 
 
+// async function runMsak({ sid, streams = 2, durationMs = 5000 } = {}) {
+
+//   const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2,7)}`;
+
+//   // avoid duplicate runs for the same push SID (e.g., double SW posts)
+//   if (sid && activePushRuns.has(sid)) {
+//     log('runMsak: already running for sid', sid);
+//     return;
+//   }
+//   if (sid) activePushRuns.add(sid);
+
+//   let lastDL = null, lastUL = null;
+//   let sawFinalDL = false, sawFinalUL = false;
+//   let didSaveDL  = false, didSaveUL  = false;
+
+//   try {
+//     const client = new msak.Client('web-client', '0.3.1', {
+//       onDownloadResult: r => {
+//         lastDL = r;
+//         if (r?.final === true && !didSaveDL) {
+//           sawFinalDL = true;
+//           const bps  = extractGoodputBps(r);
+//           const mbps = (bps || 0) / 1e6;
+//           log(`↓ ${mbps.toFixed(2)} Mbps`);
+//           didSaveDL = true;
+
+//           sendResult('download', r, { sid, session_id: String(sid), streams, durationMs, goodput_bps_override: bps, clientRunId: runId });
+
+
+//           // sendResult('download', r, {
+//           //   sid, session_id: String(sid), streams, durationMs, goodput_bps_override: bps
+//           // });
+
+//           markFinal('download');
+//         }
+//       },
+//       onUploadResult: r => {
+//         lastUL = r;
+//         if (r?.final === true && !didSaveUL) {
+//           sawFinalUL = true;
+//           const bps  = extractGoodputBps(r);
+//           const mbps = (bps || 0) / 1e6;
+//           log(`↑ ${mbps.toFixed(2)} Mbps`);
+//           didSaveUL = true;
+
+//           // sendResult('upload', r, {
+//           //   sid, session_id: String(sid), streams, durationMs, goodput_bps_override: bps
+//           // });
+
+//          sendResult('upload', r, { sid, session_id: String(sid), streams, durationMs, goodput_bps_override: bps, clientRunId: runId });
+
+
+//           markFinal('upload');
+//         }
+//       },
+//       onError: e => log('MSAK error:', e?.stack || e?.message || e)
+//     });
+
+//     // tag for traceability
+//     client.metadata = { sid, trigger: 'push', ua: navigator.userAgent };
+
+//     // v0.3.1 shim — map args to instance fields before start()
+//     if (!client.runThroughputTest) {
+//       client.runThroughputTest = function (a, b, c) {
+//         let _sid, _streams, _durationMs;
+//         if (a && typeof a === 'object') ({ sid: _sid, streams: _streams, durationMs: _durationMs } = a);
+//         else { _sid = a; _streams = b; _durationMs = c; }
+//         if (_streams != null) this.streams = _streams;
+//         if (_durationMs != null) this.duration = _durationMs;
+//         if (_sid != null) this.metadata = { ...(this.metadata || {}), sid: _sid };
+//         return this.start();
+//       };
+//     }
+
+//     await client.runThroughputTest({ streams, durationMs });
+
+//     // Fallbacks (SDK didn’t flag finals). Only save if not already saved.
+//     if (!sawFinalDL && lastDL && !didSaveDL) {
+//       const bps  = extractGoodputBps(lastDL);
+//       const mbps = (bps || 0) / 1e6;
+//       log(`↓ ${mbps.toFixed(2)} Mbps (fallback)`);
+//       didSaveDL = true;
+
+//       sendResult('download', lastDL, {
+//         sid, session_id: String(sid), streams, durationMs, goodput_bps_override: bps
+//       });
+      
+
+//       markFinal('download');
+//     }
+//     if (!sawFinalUL && lastUL && !didSaveUL) {
+//       const bps  = extractGoodputBps(lastUL);
+//       const mbps = (bps || 0) / 1e6;
+//       log(`↑ ${mbps.toFixed(2)} Mbps (fallback)`);
+//       didSaveUL = true;
+
+//       sendResult('upload', lastUL, {
+//         sid, session_id: String(sid), streams, durationMs, goodput_bps_override: bps
+//       });
+
+//       markFinal('upload');
+//     }
+//   } catch (e) {
+//     log('runMsak error:', e?.message || e);
+//   } finally {
+//     if (sid) activePushRuns.delete(sid);
+//   }
+// }
+
+
 async function runMsak({ sid, streams = 2, durationMs = 5000 } = {}) {
+  const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2,7)}`;
+
   // avoid duplicate runs for the same push SID (e.g., double SW posts)
   if (sid && activePushRuns.has(sid)) {
     log('runMsak: already running for sid', sid);
@@ -395,7 +589,7 @@ async function runMsak({ sid, streams = 2, durationMs = 5000 } = {}) {
 
   try {
     const client = new msak.Client('web-client', '0.3.1', {
-      onDownloadResult: r => {
+      onDownloadResult: async r => {
         lastDL = r;
         if (r?.final === true && !didSaveDL) {
           sawFinalDL = true;
@@ -404,14 +598,17 @@ async function runMsak({ sid, streams = 2, durationMs = 5000 } = {}) {
           log(`↓ ${mbps.toFixed(2)} Mbps`);
           didSaveDL = true;
 
-          sendResult('download', r, {
-            sid, session_id: String(sid), streams, durationMs, goodput_bps_override: bps
-          });
+          try {
+            await sendResult('download', r, {
+              sid, session_id: String(sid), streams, durationMs,
+              goodput_bps_override: bps, clientRunId: runId
+            });
+          } catch (e) { log('sendResult(download) error:', e?.message || e); }
 
           markFinal('download');
         }
       },
-      onUploadResult: r => {
+      onUploadResult: async r => {
         lastUL = r;
         if (r?.final === true && !didSaveUL) {
           sawFinalUL = true;
@@ -420,9 +617,12 @@ async function runMsak({ sid, streams = 2, durationMs = 5000 } = {}) {
           log(`↑ ${mbps.toFixed(2)} Mbps`);
           didSaveUL = true;
 
-          sendResult('upload', r, {
-            sid, session_id: String(sid), streams, durationMs, goodput_bps_override: bps
-          });
+          try {
+            await sendResult('upload', r, {
+              sid, session_id: String(sid), streams, durationMs,
+              goodput_bps_override: bps, clientRunId: runId
+            });
+          } catch (e) { log('sendResult(upload) error:', e?.message || e); }
 
           markFinal('upload');
         }
@@ -455,21 +655,28 @@ async function runMsak({ sid, streams = 2, durationMs = 5000 } = {}) {
       log(`↓ ${mbps.toFixed(2)} Mbps (fallback)`);
       didSaveDL = true;
 
-      sendResult('download', lastDL, {
-        sid, session_id: String(sid), streams, durationMs, goodput_bps_override: bps
-      });
+      try {
+        await sendResult('download', lastDL, {
+          sid, session_id: String(sid), streams, durationMs,
+          goodput_bps_override: bps, clientRunId: runId
+        });
+      } catch (e) { log('sendResult(download,fallback) error:', e?.message || e); }
 
       markFinal('download');
     }
+
     if (!sawFinalUL && lastUL && !didSaveUL) {
       const bps  = extractGoodputBps(lastUL);
       const mbps = (bps || 0) / 1e6;
       log(`↑ ${mbps.toFixed(2)} Mbps (fallback)`);
       didSaveUL = true;
 
-      sendResult('upload', lastUL, {
-        sid, session_id: String(sid), streams, durationMs, goodput_bps_override: bps
-      });
+      try {
+        await sendResult('upload', lastUL, {
+          sid, session_id: String(sid), streams, durationMs,
+          goodput_bps_override: bps, clientRunId: runId
+        });
+      } catch (e) { log('sendResult(upload,fallback) error:', e?.message || e); }
 
       markFinal('upload');
     }
@@ -483,6 +690,9 @@ async function runMsak({ sid, streams = 2, durationMs = 5000 } = {}) {
 
 
 async function runManualTest() {
+
+  const runId = `manual-${Date.now()}-${Math.random().toString(36).slice(2,7)}`;
+
   if (manualRunActive) { log('Manual test already running; ignoring.'); return; }
   manualRunActive = true;
   didSaveDL = false;
@@ -655,11 +865,91 @@ async function oneHourRunThenCsv() {
 }
 
 
-async function sendResult(direction, r, { sid, session_id, streams, durationMs, goodput_bps_override }) {
-  // only include sub_id if numeric
-  const numericSid = typeof sid === 'number' || /^\d+$/.test(String(sid)) ? Number(sid) : undefined;
+// async function sendResult(direction, r, { sid, session_id, streams, durationMs, goodput_bps_override }) {
+//   // only include sub_id if numeric
+//   const numericSid = typeof sid === 'number' || /^\d+$/.test(String(sid)) ? Number(sid) : undefined;
 
-  // prefer explicit override, else derive from r
+//   // prefer explicit override, else derive from r
+//   const bps = (typeof goodput_bps_override === 'number')
+//     ? goodput_bps_override
+//     : extractGoodputBps(r);
+
+//   const body = {
+//     direction,
+//     session_id: session_id ?? null,
+//     goodput_bps: bps,                  // <-- always a number (or null)
+//     streams: streams ?? null,
+//     duration_ms: durationMs ?? null,
+//     result_json: r ?? null
+//   };
+//   if (numericSid !== undefined) body.sub_id = numericSid;
+
+//   const res = await fetch('/.netlify/functions/save-result', {
+//     method: 'POST',
+//     headers: { 'content-type': 'application/json' },
+//     body: JSON.stringify(body)
+//   });
+//   const text = await res.text().catch(()=> '');
+//   if (!res.ok) log('save-result failed', res.status, text);
+//   else         log('save-result ok', text);
+// }
+
+
+// async function sendResult(direction, r, { sid, session_id, streams, durationMs, goodput_bps_override, clientRunId }) {
+//   const numericSid = typeof sid === 'number' || /^\d+$/.test(String(sid)) ? Number(sid) : undefined;
+
+//   const bps = (typeof goodput_bps_override === 'number')
+//     ? goodput_bps_override
+//     : extractGoodputBps(r);
+
+//   const body = {
+//     direction,
+//     session_id: session_id ?? null,
+//     goodput_bps: bps,
+//     streams: streams ?? null,
+//     duration_ms: durationMs ?? null,
+//     result_json: r ?? null
+//   };
+//   if (numericSid !== undefined) body.sub_id = numericSid;
+
+//   const res = await fetch('/.netlify/functions/save-result', {
+//     method: 'POST',
+//     headers: { 'content-type': 'application/json' },
+//     body: JSON.stringify(body)
+//   });
+
+//   const text = await res.text().catch(()=> '');
+//   if (!res.ok) {
+//     log('save-result failed', res.status, text);
+//     return null;
+//   } else {
+//     log('save-result ok', text);
+//     try {
+//       const saved = JSON.parse(text); // { ok, id, test_time, direction, goodput_bps }
+//       // Feed the aggregator so we can download a per-run CSV after DL+UL
+//       if (clientRunId) {
+//         collectRunPiece({
+//           runId: clientRunId,
+//           direction,
+//           saved,
+//           streams,
+//           durationMs,
+//           session_id,
+//           sub_id: numericSid
+//         });
+//       }
+//       return saved;
+//     } catch {
+//       return null;
+//     }
+//   }
+// }
+
+async function sendResult(direction, r, {
+  sid, session_id, streams, durationMs, goodput_bps_override, clientRunId
+}) {
+  const numericSid = (Number.isFinite(+sid)) ? +sid : undefined;
+
   const bps = (typeof goodput_bps_override === 'number')
     ? goodput_bps_override
     : extractGoodputBps(r);
@@ -667,7 +957,7 @@ async function sendResult(direction, r, { sid, session_id, streams, durationMs, 
   const body = {
     direction,
     session_id: session_id ?? null,
-    goodput_bps: bps,                  // <-- always a number (or null)
+    goodput_bps: bps,
     streams: streams ?? null,
     duration_ms: durationMs ?? null,
     result_json: r ?? null
@@ -676,13 +966,35 @@ async function sendResult(direction, r, { sid, session_id, streams, durationMs, 
 
   const res = await fetch('/.netlify/functions/save-result', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', 'accept': 'application/json' },
     body: JSON.stringify(body)
   });
-  const text = await res.text().catch(()=> '');
-  if (!res.ok) log('save-result failed', res.status, text);
-  else         log('save-result ok', text);
+
+  let saved = null;
+  try { saved = await res.json(); } catch { /* fall through */ }
+  if (!res.ok || !saved?.ok) {
+    const txt = saved ? JSON.stringify(saved) : await res.text().catch(()=>'');
+    log('save-result failed', res.status, txt || '(no body)');
+    return null;
+  }
+
+  // { ok, id, test_time, direction, goodput_bps }
+  log('save-result ok', JSON.stringify(saved));
+
+  if (clientRunId) {
+    collectRunPiece({
+      runId: clientRunId,
+      direction,
+      saved,
+      streams,
+      durationMs,
+      session_id,
+      sub_id: numericSid
+    });
+  }
+  return saved;
 }
+
 
 
 
